@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN" class="dark font-sans" style="color-scheme: dark">
+<html lang="zh-CN" class="font-sans">
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,10 +7,22 @@
         <link rel="icon" href="/beef-logo.png" type="image/png" />
         <title>正在加载</title>
         <style>
+            html {
+                --boot-bg: #ffffff;
+                --boot-ink: rgba(0, 0, 0, 0.72);
+                --boot-ring: rgba(0, 0, 0, 0.18);
+                --boot-halo: rgba(0, 0, 0, 0.08);
+            }
+            html.dark {
+                --boot-bg: #0f0f0f;
+                --boot-ink: rgba(255, 255, 255, 0.84);
+                --boot-ring: rgba(255, 255, 255, 0.14);
+                --boot-halo: rgba(255, 255, 255, 0.08);
+            }
             html,
             body {
                 margin: 0;
-                background: #0f0f0f;
+                background: var(--boot-bg);
             }
             #root:empty {
                 min-height: 100vh;
@@ -23,9 +35,9 @@
                 width: 12px;
                 height: 12px;
                 margin: -6px 0 0 -6px;
-                background: rgba(255, 255, 255, 0.84);
+                background: var(--boot-ink);
                 border-radius: 999px;
-                box-shadow: 0 0 0 7px rgba(255, 255, 255, 0.08);
+                box-shadow: 0 0 0 7px var(--boot-halo);
                 animation: appearance-bootstrap-pulse 1.8s ease-in-out infinite;
             }
             #root:empty::after {
@@ -36,7 +48,7 @@
                 width: 82px;
                 height: 82px;
                 margin: -42px 0 0 -42px;
-                border: 1px solid rgba(255, 255, 255, 0.14);
+                border: 1px solid var(--boot-ring);
                 border-right-color: transparent;
                 border-radius: 999px;
                 animation: appearance-bootstrap-orbit 2.8s linear infinite;
@@ -51,13 +63,23 @@
             }
         </style>
         <script>
-            // BeefTV is dark-first. Apply the invariant before React mounts so a
-            // missing, stale or corrupted preference cannot produce a white flash.
-            document.documentElement.classList.add("dark");
-            document.documentElement.style.colorScheme = "dark";
+            // BeefTV 默认亮色；启动前读取本地明暗偏好，避免主题偏好与首帧渲染不一致造成闪烁。
+            (function () {
+                var theme = "light";
+                try {
+                    var raw = window.localStorage.getItem("infinite-canvas:theme_store:v2");
+                    if (raw) {
+                        var parsed = JSON.parse(raw);
+                        if (parsed && parsed.state && parsed.state.theme === "dark") theme = "dark";
+                    }
+                } catch (error) { /* 解析失败按默认亮色处理 */ }
+                var root = document.documentElement;
+                root.classList.toggle("dark", theme === "dark");
+                root.style.colorScheme = theme;
+            })();
         </script>
     </head>
-    <body class="bg-background text-foreground antialiased" style="background:#0f0f0f">
+    <body class="bg-background text-foreground antialiased">
         <div id="root"></div>
         <script type="module" src="/src/main.tsx"></script>
     </body>

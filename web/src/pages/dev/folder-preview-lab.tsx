@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ChevronLeft, FolderOpen, ImagePlus, Moon, MousePointer2 } from "lucide-react";
+import { ChevronLeft, FolderOpen, ImagePlus, MousePointer2, Sun } from "lucide-react";
 
 import { CanvasFolderPreview } from "@/components/canvas/canvas-folder-preview";
 import { CANVAS_FOLDER_THEME_OPTIONS } from "@/lib/canvas/canvas-folder-theme";
@@ -107,8 +107,8 @@ export default function FolderPreviewLab() {
                 </div>
                 <div className="folder-preview-lab-controls">
                     <div className="folder-preview-lab-theme" aria-label="预览主题">
-                        <button type="button" aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}>
-                            <Moon aria-hidden /> 深色
+                        <button type="button" aria-pressed={theme === "light"} onClick={() => setTheme("light")}>
+                            <Sun aria-hidden /> 浅色
                         </button>
                     </div>
                     <div className="folder-preview-lab-guide">

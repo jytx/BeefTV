@@ -566,7 +566,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     chatSessions: cloneCanvasValue(source.chatSessions || []),
                     activeChatId: source.activeChatId || null,
                     starterMode: source.starterMode,
-                    appearance: source.appearance ? normalizeCanvasAppearance(source.appearance, "dark") : undefined,
+                    appearance: source.appearance ? normalizeCanvasAppearance(source.appearance, "light") : undefined,
                     backgroundMode: source.backgroundMode || DEFAULT_CANVAS_BACKGROUND_MODE,
                     showImageInfo: source.showImageInfo || false,
                     viewport: cloneCanvasValue(source.viewport || initialViewport),

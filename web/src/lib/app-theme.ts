@@ -378,6 +378,9 @@ export function getAntThemeConfig(dark: boolean, skinID: unknown = "classic"): T
 /** 用户端与后台共享业务控件，但使用独立的产品尺寸和柔和表面。 */
 export function getWorkspaceAntThemeConfig(): ThemeConfig {
     return {
+        // 与外层 AppProviders 的 cssVar 模式保持一致：混合嵌套（外层 cssVar、内层普通）
+        // 会让未显式配置的组件（如 Tag）在变量作用域间解析断裂，出现黑底黑字。
+        cssVar: { key: "beeftv-user-workspace" },
         token: {
             borderRadius: 12, borderRadiusLG: 16, borderRadiusSM: 8,
             controlHeight: 38, controlHeightSM: 30, controlHeightLG: 44,

@@ -1,12 +1,9 @@
-import { motion, useReducedMotion } from "motion/react";
 import { ScrollText } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
 import { AppModal } from "@/components/ui/product/app-modal/app-modal";
-import { aceternityMotion } from "@/lib/aceternity-motion";
 
 export function AppChangelogDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-    const reducedMotion = useReducedMotion();
     const version = `v${__APP_VERSION__.replace(/^v/, "")}`;
 
     return (
@@ -29,11 +26,6 @@ export function AppChangelogDialog({ open, onClose }: { open: boolean; onClose: 
             footer={null}
             centered
             onCancel={onClose}
-            modalRender={(node) => (
-                <motion.div initial={reducedMotion ? false : { opacity: 0, y: 14, scale: 0.975 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: aceternityMotion.duration.panel, ease: aceternityMotion.easing.enter }}>
-                    {node}
-                </motion.div>
-            )}
         >
             <div className="app-changelog-scroll thin-scrollbar">
                 <ReactMarkdown

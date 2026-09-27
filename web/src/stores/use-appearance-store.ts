@@ -2,6 +2,12 @@ import { create } from "zustand";
 
 import type { PublicAppearance } from "@/services/api/appearance";
 import { applySkinTheme, DEFAULT_CLASSIC_SKIN, normalizeSkinDefinition } from "@/lib/skin-themes";
+import { normalizeThemeName, useThemeStore } from "@/stores/use-theme-store";
+
+/** 当前生效的明暗模式：跟随全局主题偏好，避免启动引导写入与用户偏好不一致的皮肤变量。 */
+function currentThemeMode(): "light" | "dark" {
+    return normalizeThemeName(useThemeStore.getState().theme);
+}
 
 export const DEFAULT_PUBLIC_APPEARANCE: PublicAppearance = {
     schemaVersion: 7,
@@ -99,7 +105,7 @@ function normalizeAppearanceCopy(value: unknown, fallback: string, allowEmpty = 
 export function commitPublicAppearance(value?: Partial<PublicAppearance> | null) {
     const appearance = normalizePublicAppearance(value);
     useAppearanceStore.getState().setAppearance(appearance);
-    applySkinTheme(appearance.activeSkin, "dark");
+    applySkinTheme(appearance.activeSkin, currentThemeMode());
     applyAppearanceMetadata(appearance);
     return appearance;
 }
@@ -116,7 +122,7 @@ export function applyAppearanceMetadata(appearance: PublicAppearance, targetDocu
     setMeta(targetDocument, "name", "twitter:card", "summary");
     setMeta(targetDocument, "name", "twitter:title", appearance.seoTitle || appearance.brandName);
     setMeta(targetDocument, "name", "twitter:description", appearance.seoDescription);
-    const mode = "dark";
+    const mode = currentThemeMode();
     setMeta(targetDocument, "name", "theme-color", appearance.activeSkin.tokens[mode].canvas);
     let favicon = targetDocument.querySelector<HTMLLinkElement>('link[rel~="icon"]');
     if (!favicon) {
@@ -124,7 +130,7 @@ export function applyAppearanceMetadata(appearance: PublicAppearance, targetDocu
         favicon.rel = "icon";
         targetDocument.head.appendChild(favicon);
     }
-    favicon.href = appearanceLogoURL(appearance, "dark");
+    favicon.href = appearanceLogoURL(appearance, mode);
 
     const location = targetDocument.defaultView?.location;
     if (location && (location.protocol === "http:" || location.protocol === "https:")) {

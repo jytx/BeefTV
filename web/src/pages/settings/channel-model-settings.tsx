@@ -89,7 +89,7 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
                                     {displayName}
                                 </div>
                                 <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
-                                    <Tag className="mr-0 text-[var(--fs-tiny)]" bordered={false}>
+                                    <Tag className="mr-0 text-[var(--fs-tiny)]" bordered={false} style={{ background: "var(--user-surface-muted)", color: "var(--user-ink-muted)" }}>
                                         {capabilityLabel(capability)}
                                     </Tag>
                                     <span className="truncate font-mono text-[var(--fs-tiny)] text-foreground/40" title={modelProtocolDefinition(protocol, availableProtocols)?.create}>

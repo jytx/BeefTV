@@ -1,7 +1,7 @@
 import { canvasThemes, type CanvasBackgroundMode, type CanvasColorTheme } from "@/lib/canvas-theme";
 import { scopedLocalStorage } from "@/lib/user-scope";
 
-export type CanvasAppearanceMode = "dark" | "custom";
+export type CanvasAppearanceMode = "light" | "custom";
 
 export type CanvasCustomAppearance = {
     baseTheme: CanvasColorTheme;
@@ -29,26 +29,26 @@ export type ResolvedCanvasAppearance = {
 
 export const DEFAULT_CANVAS_BACKGROUND_MODE: CanvasBackgroundMode = "dots";
 
-// The legacy key may contain a light value written by the old system-theme
-// fallback. Start from the product's dark default once, while keeping future
-// explicit "save as default" choices functional under the versioned key.
+// The legacy key may contain a "dark" mode value written while the product
+// was dark-only. Normalize restores those to the light default, while keeping
+// explicit "save as default" custom choices functional under the versioned key.
 const CANVAS_APPEARANCE_DEFAULT_KEY = "infinite-canvas:canvas-appearance-default:v2";
 const HEX_COLOR_PATTERN = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i;
-const CUSTOM_GRID_COLOR: Record<CanvasColorTheme, string> = { light: "#000000", dark: "#AFAFAF" };
+const CUSTOM_GRID_COLOR = "#000000";
 const CUSTOM_GRID_OPACITY = 80;
 
 export function canvasAppearanceForTheme(theme: CanvasColorTheme, previous?: CanvasAppearance): CanvasAppearance {
-    return previous?.custom ? { mode: "dark", custom: { ...previous.custom, baseTheme: "dark" } } : { mode: "dark" };
+    return previous?.custom ? { mode: "custom", custom: { ...previous.custom, baseTheme: "light" } } : { mode: "light" };
 }
 
 export function customCanvasAppearanceFromTheme(theme: CanvasColorTheme): CanvasAppearance {
     return {
         mode: "custom",
         custom: {
-            baseTheme: "dark",
-            backgroundColor: canvasThemes.dark.canvas.background.toUpperCase(),
+            baseTheme: "light",
+            backgroundColor: canvasThemes.light.canvas.background.toUpperCase(),
             backgroundBrightness: 0,
-            gridColor: CUSTOM_GRID_COLOR.dark,
+            gridColor: CUSTOM_GRID_COLOR,
             gridOpacity: CUSTOM_GRID_OPACITY,
         },
     };
@@ -60,13 +60,14 @@ export function enterCustomCanvasAppearance(current: CanvasAppearance, currentTh
 }
 
 export function canvasAppearanceBaseTheme(appearance: CanvasAppearance | undefined, fallback: CanvasColorTheme): CanvasColorTheme {
-    return "dark";
+    return "light";
 }
 
 export function normalizeCanvasAppearance(value: unknown, fallback: CanvasColorTheme): CanvasAppearance {
     if (!value || typeof value !== "object") return canvasAppearanceForTheme(fallback);
     const candidate = value as Partial<CanvasAppearance>;
-    const mode = candidate.mode === "custom" ? "custom" : "dark";
+    // 历史版本只提供暗色，存量 "dark" 值是强制锁定的产物而非用户选择，统一迁移到亮色。
+    const mode = candidate.mode === "custom" ? "custom" : "light";
     const custom = normalizeCustomAppearance(candidate.custom);
     if (mode === "custom" && !custom) return customCanvasAppearanceFromTheme(fallback);
     return custom ? { mode, custom } : { mode };
@@ -114,7 +115,7 @@ export function readCanvasAppearanceDefault(): CanvasAppearanceDefault | null {
     try {
         const parsed = JSON.parse(value) as Partial<CanvasAppearanceDefault>;
         if (parsed.backgroundMode !== "dots" && parsed.backgroundMode !== "lines" && parsed.backgroundMode !== "blank") return null;
-        const fallback = canvasAppearanceBaseTheme(parsed.appearance, "dark");
+        const fallback = canvasAppearanceBaseTheme(parsed.appearance, "light");
         return {
             appearance: normalizeCanvasAppearance(parsed.appearance, fallback),
             backgroundMode: parsed.backgroundMode,
@@ -125,7 +126,7 @@ export function readCanvasAppearanceDefault(): CanvasAppearanceDefault | null {
 }
 
 export function writeCanvasAppearanceDefault(value: CanvasAppearanceDefault) {
-    const fallback = canvasAppearanceBaseTheme(value.appearance, "dark");
+    const fallback = canvasAppearanceBaseTheme(value.appearance, "light");
     scopedLocalStorage.setItem(CANVAS_APPEARANCE_DEFAULT_KEY, JSON.stringify({
         appearance: normalizeCanvasAppearance(value.appearance, fallback),
         backgroundMode: value.backgroundMode,
@@ -139,7 +140,7 @@ function normalizeCustomAppearance(value: unknown): CanvasCustomAppearance | und
     const gridColor = typeof candidate.gridColor === "string" ? normalizeHexColor(candidate.gridColor) : null;
     if (!backgroundColor || !gridColor) return undefined;
     return {
-        baseTheme: "dark",
+        baseTheme: "light",
         backgroundColor,
         backgroundBrightness: clampNumber(candidate.backgroundBrightness, -30, 30, 0),
         gridColor,

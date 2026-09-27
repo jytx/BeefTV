@@ -1,9 +1,10 @@
-import { App, Button } from "antd";
+import { App, Button, Segmented } from "antd";
 import { ArrowLeft, RadioTower } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { useThemeStore } from "@/stores/use-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { ChannelSettingsPane, channelValidationError, focusInvalidChannelField, isChannelReady } from "./channel-settings-pane";
 import { ModelDefaultGrid } from "./model-default-grid";
@@ -29,6 +30,8 @@ export default function SettingsPage() {
     const config = useConfigStore((state) => state.config);
     const effectiveConfig = useEffectiveConfig();
     const updateConfig = useConfigStore((state) => state.updateConfig);
+    const theme = useThemeStore((state) => state.theme);
+    const setTheme = useThemeStore((state) => state.setTheme);
     const shouldPromptContinue = searchParams.get("continue") === "1";
     const userChannels = config.channels.filter((channel) => channel.scope !== "system");
     const visibleConfigSections = useMemo(() => customChannelsEnabled ? configSections : configSections.filter((section) => section.key !== "channels"), [customChannelsEnabled]);
@@ -75,6 +78,22 @@ export default function SettingsPage() {
     const panes: Record<ConfigSectionKey, ReactNode> = {
         channels: (
             <SettingsPane>
+                <div className="settings-section">
+                    <div className="settings-pane-header">
+                        <div className="min-w-0">
+                            <h2>外观</h2>
+                            <p>选择界面明暗风格，默认浅色；切换后立即生效并自动记忆。</p>
+                        </div>
+                    </div>
+                    <Segmented
+                        value={theme}
+                        onChange={(value) => setTheme(value as string)}
+                        options={[
+                            { value: "light", label: "浅色" },
+                            { value: "dark", label: "深色" },
+                        ]}
+                    />
+                </div>
                 <ChannelSettingsPane />
                 <div className="settings-section mt-4">
                     <div className="settings-pane-header">

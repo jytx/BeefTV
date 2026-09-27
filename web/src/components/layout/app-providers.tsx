@@ -23,7 +23,8 @@ function ClientRootBoundary({ children }: { children: ReactNode }) {
 
 export function AppProviders({ children }: { children: ReactNode }) {
     const theme = useActiveTheme();
-    const dark = theme === "dark";
+    // theme 为 "light" | "dark"；用 !== 比较保证未知的持久化值也回退到亮色渲染。
+    const dark = theme !== "light";
     const appearance = useAppearanceStore((state) => state.appearance);
 
     useLayoutEffect(() => {
