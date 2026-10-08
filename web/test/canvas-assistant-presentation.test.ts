@@ -127,6 +127,15 @@ describe("付费生成确认", () => {
         const text = assistantProposalText({ proposalId: "p2", kind: "video", nodeIds: ["a"], model: "seedance-1", modelKey: "ch::seedance-1" });
         expect(text).toContain("生成 1 段视频");
     });
+
+    test("旧真人模型提议显示统一名称与当前渠道报价", () => {
+        const text = assistantProposalText({ proposalId: "portrait", kind: "video", nodeIds: ["a"], model: "seedance-2.0-portrait", modelKey: "byok::seedance-2.0-portrait" }, ["720p：无视频输入 ¥69，含视频输入 ¥42 / 百万视频 Token"]);
+        expect(text).toContain("Seedance 2.0");
+        expect(text).not.toContain("Seedance 2.0-真人");
+        expect(text).toContain("¥69");
+        expect(text).toContain("¥42");
+        expect(text).not.toContain("byok::");
+    });
 });
 
 describe("右侧栏位互斥", () => {

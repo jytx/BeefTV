@@ -9,6 +9,29 @@ All notable public changes to BeefTV are documented in this file.
 - Added reproducible local builds, automated quality checks, and multi-architecture container publishing.
 - Standardized public artifacts, runtime identifiers, documentation, and repository links on the BeefTV name.
 
+## v1.7.12
+
+- Seedance 2.0、2.5 统一名称，模型列表不再重复展示真人素材型号。
+- 模型选择和助手生成确认显示当前报价。
+- 保留旧项目的模型设置，仍可继续使用。
+
+## v1.7.11
+
+- 图片生成前先保存画布节点，保存冲突时停止提交，避免生成完成后找不到结果节点。
+- 图片已生成但画布更新失败时保留原任务，可重新加载资源，无需再次生成。
+- 修复桌面端“重新加载资源”不可用，以及恢复任务后一直显示生成中的问题。
+
+## v1.7.10
+
+- 真人视频模型统一显示为 Seedance 2.0-真人、Seedance 2.5-真人，模型选择、设置和名称搜索保持一致。
+- API 模型 ID、价格与渠道路由保持不变。
+
+## v1.7.9
+
+- 新增 Seedance 2.0、2.5 真人素材版，选择模型时显示价格，标准版保留原价。
+- 修复模型目录刷新、分镜工作台恢复设置时可能自动切换到不同收费档位的问题。
+- 生成与重试前检查真人素材版的可用状态和报价，助手确认卡片同步显示单价。
+
 ## v1.7.8
 
 - 修复部分视频点击预览后页面崩溃、无法播放的问题。

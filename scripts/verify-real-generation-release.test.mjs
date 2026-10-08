@@ -48,6 +48,166 @@ function setupRepo(version) {
   return { dir, git, run, save, commitVersion };
 }
 
+test('v1.7.12 unified-name waiver cannot waive evidence or carry forward', () => {
+  const { dir, run, save, commitVersion } = setupRepo('v1.7.12');
+  try {
+    const sourceDigest = run('--fingerprint').trim();
+    const evidence = ['synthetic test receipt'];
+    const value = {
+      version: 'v1.7.12', sourceDigest, budgetCNY: null, spentCNY: null, pendingCNY: null,
+      newSpentCNY: 0, newPendingCNY: 0, cases: [], liveMatrixStatus: 'not_run_owner_waived', releaseComplete: false,
+      liveTestWaiver: { approvedBy: 'Ender', instruction: '上线吧 豁免了 飞书文档你再看看还要不要更新', scope: 'seedance-unified-display', evidence },
+      priorFinancialUncertainty: { status: 'unresolved', carriedFromVersion: 'v1.7.11', pendingCNY: null, evidence },
+      review: { result: 'approved', independent: true, reviewer: 'fixture', sourceDigest, evidence },
+      upgrade: { preservedData: true, sourceDigest, evidence },
+      verification: Object.fromEntries(['displayNames', 'nativeNames', 'localReleaseGate', 'ci'].map(id => [id, { status: 'passed', method: id === 'nativeNames' ? 'native' : 'test', sourceDigest, evidence }])),
+      packages: { status: 'pending_release_workflow', windowsReleasedUpgradeAndRollbackBeforeUpload: true, finalArchiveSmokeBeforeUpload: true, workflowEvidence: evidence },
+    };
+    save(value); assert.match(run(), /unified Seedance release; paid matrix NOT run/);
+    const mutations = [
+      r => r.liveTestWaiver.instruction = '上线吧', r => r.liveTestWaiver.approvedBy = 'other',
+      r => r.liveTestWaiver.evidence = [], r => r.liveTestWaiver.scope = 'other',
+      r => r.newSpentCNY = 1, r => r.newPendingCNY = null, r => r.cases.push({}),
+      r => r.liveMatrixStatus = 'passed', r => r.budgetCNY = 0, r => r.spentCNY = 0, r => r.pendingCNY = 0,
+      r => r.priorFinancialUncertainty.pendingCNY = 0, r => r.priorFinancialUncertainty.evidence = [],
+      r => r.priorFinancialUncertainty.carriedFromVersion = 'v1.7.10', r => r.review.independent = false,
+      r => r.review.sourceDigest = 'old', r => r.review.result = 'pending', r => r.upgrade.preservedData = false,
+      r => r.upgrade.sourceDigest = 'old', r => r.verification.nativeNames.method = 'static',
+      r => r.packages.windowsReleasedUpgradeAndRollbackBeforeUpload = false,
+      r => r.packages.finalArchiveSmokeBeforeUpload = false, r => r.packages.workflowEvidence = [],
+      r => r.packages.status = 'passed', r => r.packages.archives = {}, r => r.releaseComplete = true,
+    ];
+    for (const id of Object.keys(value.verification)) mutations.push(
+      r => delete r.verification[id], r => r.verification[id].status = 'pending',
+      r => r.verification[id].sourceDigest = 'old', r => r.verification[id].evidence = []);
+    for (const mutate of mutations) {
+      const invalid = structuredClone(value); mutate(invalid); save(invalid); assert.throws(() => run());
+    }
+    commitVersion('v1.7.13');
+    save({ ...value, version: 'v1.7.13', sourceDigest: run('--fingerprint').trim() }, 'v1.7.13');
+    assert.throws(() => run());
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('v1.7.10 name-only waiver retains native, review, financial and package gates', () => {
+  const { dir, run, save, commitVersion } = setupRepo('v1.7.10');
+  try {
+    const sourceDigest = run('--fingerprint').trim();
+    const evidence = ['synthetic test receipt'];
+    const value = {
+      version: 'v1.7.10', sourceDigest, budgetCNY: 0, spentCNY: 0, newSpentCNY: 0, pendingCNY: 0,
+      liveMatrixStatus: 'not_run_owner_waived', cases: [], releaseComplete: false,
+      liveTestWaiver: { approvedBy: 'Ender', instruction: 'beeftv本次豁免 直接上线', scope: 'seedance-display-names-only', evidence },
+      priorFinancialUncertainty: { status: 'unresolved', carriedFromVersion: 'v1.7.9', pendingCNY: null, evidence },
+      review: { result: 'approved', independent: true, reviewer: 'fixture', sourceDigest, evidence },
+      upgrade: { preservedData: true, sourceDigest, evidence },
+      verification: Object.fromEntries(['displayNames', 'nativeNames', 'localReleaseGate', 'ci'].map(id => [id, { status: 'passed', method: id === 'nativeNames' ? 'native' : 'test', sourceDigest, evidence }])),
+      packages: { status: 'pending_release_workflow', windowsReleasedUpgradeAndRollbackBeforeUpload: true, finalArchiveSmokeBeforeUpload: true, workflowEvidence: evidence },
+    };
+    save(value);
+    assert.match(run(), /display-name release; paid matrix NOT run/);
+    for (const mutate of [
+      r => { r.liveTestWaiver.instruction = '上线吧'; },
+      r => { r.spentCNY = 1; },
+      r => { r.liveMatrixStatus = 'passed'; },
+      r => { r.priorFinancialUncertainty.pendingCNY = 0; },
+      r => { r.review.independent = false; },
+      r => { r.upgrade.preservedData = false; },
+      r => { r.verification.nativeNames.method = 'static'; },
+      r => { r.verification.displayNames.sourceDigest = 'old'; },
+      r => { r.verification.ci.status = 'pending'; },
+      r => { r.packages.windowsReleasedUpgradeAndRollbackBeforeUpload = false; },
+      r => { r.releaseComplete = true; },
+    ]) {
+      const invalid = structuredClone(value); mutate(invalid); save(invalid);
+      assert.throws(() => run());
+    }
+    commitVersion('v1.7.11');
+    value.version = 'v1.7.11'; value.sourceDigest = run('--fingerprint').trim(); save(value, 'v1.7.11');
+    assert.throws(() => run());
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('v1.7.9 accepted evidence cannot hide gaps, skip native cases, or carry to another version', () => {
+  const { dir, git, run, save, commitVersion } = setupRepo('v1.7.9');
+  try {
+    // Reuse Git objects only: no working files, accounts or private test media.
+    git('fetch', '--quiet', '--depth=1', decodeURIComponent(new URL('..', import.meta.url).pathname), 'refs/tags/v1.7.9');
+    git('update-ref', 'HEAD', 'FETCH_HEAD');
+    const value = JSON.parse(readFileSync(new URL('../docs/release-evidence/v1.7.9.json', import.meta.url)));
+    value.sourceDigest = run('--fingerprint').trim();
+    value.review.sourceDigest = value.sourceDigest;
+    value.review.result = 'approved'; // Synthetic isolated test fixture, not a release approval.
+    save(value);
+    assert.match(run(), /owner-authorized evidence carry-forward/);
+    for (const mutate of [
+      r => { r.ownerException.instruction = 'yes'; },
+      r => { r.pendingCNY = 0; },
+      r => { r.budgetCNY = 200; },
+      r => { r.portraitAcceptance.cases[1].billing = 'pending'; },
+      r => { r.portraitAcceptance.cases[0].attempts = 2; },
+      r => { r.cases[0].executedSourceDigest = r.sourceDigest; },
+      r => { r.cases[0].confirmed = false; },
+      r => { delete r.agentChecks.cli_mcp; },
+      r => { r.agentChecks.session_restart.status = 'pending'; },
+      r => { r.review.result = 'pending'; },
+      r => { r.packages.windowsReleasedUpgradeAndRollbackBeforeUpload = false; },
+      r => { r.releaseComplete = true; },
+    ]) {
+      const invalid = structuredClone(value);
+      mutate(invalid); save(invalid);
+      assert.throws(() => run());
+    }
+    // Product changes cannot be hidden by updating the outer receipt digest.
+    mkdirSync(join(dir, 'backend'), { recursive: true });
+    writeFileSync(join(dir, 'backend/unaccepted-change.txt'), 'changed runtime');
+    git('add', 'backend/unaccepted-change.txt');
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'unaccepted runtime');
+    value.sourceDigest = run('--fingerprint').trim(); value.review.sourceDigest = value.sourceDigest; save(value);
+    assert.throws(() => run());
+    commitVersion('v1.7.10');
+    value.version = 'v1.7.10'; value.sourceDigest = run('--fingerprint').trim(); save(value, 'v1.7.10');
+    assert.throws(() => run());
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('v1.7.11 one-image authorization rejects additional calls, stale source, missing recovery or review', () => {
+  const { dir, run, save, commitVersion } = setupRepo('v1.7.11');
+  try {
+    const digest = run('--fingerprint').trim();
+    const bound = { sourceDigest: digest, evidence: ['synthetic.log'] };
+    const valid = {
+      version: 'v1.7.11', sourceDigest: digest, releaseComplete: false,
+      ownerException: { scope: 'canvas-image-bind-regression-20261007', approvedBy: 'Ender', instruction: '只复测一次生成图片看看会不会复现报错即可上线', evidence: ['owner.log'] },
+      liveMatrixStatus: 'not_run_owner_limited_to_one_image', paidSubmissionLimit: 1,
+      cases: [{ path: 'image-image', model: 'beefapi::gpt-image-2.5', attempts: 1, status: 'succeeded', clientSubmitted: true, canvasVerified: true, mediaDecoded: true, mediaOpened: true, billing: 'settled', costCNY: 0.42, executedSourceDigest: digest, clientVersion: 'v1.7.11', taskId: 'synthetic-task', providerRequestId: 'synthetic-request', artifactSHA256: 'a'.repeat(64), evidence: ['native.log'] }],
+      newSpentCNY: 0.42, newPendingCNY: 0,
+      budgetCNY: null, spentCNY: null, pendingCNY: null,
+      financialUncertainty: { status: 'unresolved', evidence: ['prior.json'] },
+      priorFinancialUncertainty: { status: 'unresolved', carriedFromVersion: 'v1.7.10', pendingCNY: null, evidence: ['prior.json'] },
+      review: { ...bound, result: 'approved', independent: true, reviewer: 'synthetic-reviewer' },
+      upgrade: { ...bound, preservedData: true },
+      verification: Object.fromEntries(['saveBarrier', 'resultRecovery', 'scopeIsolation', 'localReleaseGate', 'ci'].map(id => [id, { ...bound, status: 'passed' }])),
+      packages: { status: 'pending_release_workflow', windowsReleasedUpgradeAndRollbackBeforeUpload: true, finalArchiveSmokeBeforeUpload: true, workflowEvidence: ['workflow.yml'] },
+    };
+    save(valid); assert.match(run(), /single-image regression passed/);
+    for (const mutate of [
+      r => r.cases.push(r.cases[0]), r => r.cases[0].attempts = 2,
+      r => r.cases[0].canvasVerified = false, r => r.cases[0].billing = 'pending',
+      r => r.cases[0].executedSourceDigest = 'b'.repeat(64),
+      r => r.ownerException.instruction = 'yes', r => r.review.result = 'pending',
+      r => r.verification.resultRecovery.status = 'pending', r => r.priorFinancialUncertainty.pendingCNY = 0,
+      r => r.budgetCNY = 0, r => r.spentCNY = 0, r => r.pendingCNY = 0,
+      r => delete r.financialUncertainty, r => r.financialUncertainty.evidence = [],
+      r => { r.cases[0].costCNY = 0; r.newSpentCNY = 0; },
+      r => r.packages.finalArchiveSmokeBeforeUpload = false, r => r.releaseComplete = true,
+    ]) { const invalid = structuredClone(valid); mutate(invalid); save(invalid); assert.throws(() => run()); }
+    commitVersion('v1.7.12');
+    valid.version = 'v1.7.12'; valid.sourceDigest = run('--fingerprint').trim(); save(valid, 'v1.7.12');
+    assert.throws(() => run());
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('release fingerprint binds the packaged app icon', () => {
   const { dir, git, run } = setupRepo('v1.7.6');
   try {
