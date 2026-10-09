@@ -331,7 +331,7 @@ func writeTestPNG(t *testing.T, width, height int) string {
 func TestOpAssetUploadRegistersLocalImage(t *testing.T) {
 	probe := newAssetWriteProbe()
 	path := writeTestPNG(t, 16, 9)
-	result, err := opAssetUpload(&Context{UserID: "owner", Domain: probe, OpID: "op-1"},
+	result, err := opAssetUpload(&Context{UserID: "owner", Domain: probe, OperationID: "op-1"},
 		json.RawMessage(`{"filePath":"`+path+`","title":"Codex 生成图","tags":["AI"]}`))
 	if err != nil {
 		t.Fatal(err)

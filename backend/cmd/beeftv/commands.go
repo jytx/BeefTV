@@ -259,7 +259,7 @@ func runClient(c *client, args []string) error {
 	}
 	fs := flag.NewFlagSet("client register", flag.ContinueOnError)
 	label := fs.String("label", "", "客户端名称")
-	mode := fs.String("mode", "read-only", "read-only 或 read-write")
+	mode := fs.String("mode", "read-write", "read-only 或 read-write")
 	kind := fs.String("kind", "other", "codex、claude、cursor 或 other")
 	jsonOut := fs.Bool("json", false, "输出 JSON")
 	if err := fs.Parse(args[1:]); err != nil {

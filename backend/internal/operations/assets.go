@@ -201,7 +201,7 @@ func opAssetUpload(ctx *Context, params json.RawMessage) (any, error) {
 	}
 	defer file.Close()
 	resource, err := ctx.Domain.UploadLocalFile(ctx.UserID, filepath.Base(args.FilePath), size,
-		"image", width, height, 0, file, string(ctx.Caller.Kind)+":"+ctx.OpID)
+		"image", width, height, 0, file, string(ctx.Caller.Kind)+":"+ctx.OperationID)
 	if err != nil {
 		return nil, mapDomainError(err)
 	}

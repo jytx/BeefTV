@@ -16,6 +16,15 @@ import (
 // 付费生成只经 canvas.generation.propose 提议、由界面确认后执行；
 // 未经参数与费用风险验收的能力明确不注册，而不是提供 stub 伪成功。
 func RegisterDefaultOps(r *Registry) {
+	registerCanvasEditOps(r)
+	registerCanvasNodeBindAsset(r)
+	registerModelCatalogOp(r)
+	registerMediaOps(r)
+	registerSkillOps(r)
+	registerProjectSearchOps(r)
+	registerCanvasTimelineOps(r)
+	registerCanvasRenderOps(r)
+	registerCanvasNodeConfigureOps(r)
 	r.Register(Op{ID: "canvas.get", Summary: "读取指定画布的完整内容（节点与连线）", ReadOnly: true, Scope: ScopeCanvas,
 		Params:  json.RawMessage(`{"type":"object","properties":{"canvasId":{"type":"string"}},"required":["canvasId"]}`),
 		Handler: opCanvasGet})
@@ -350,6 +359,7 @@ func opTaskGet(ctx *Context, params json.RawMessage) (any, error) {
 	}
 	return map[string]any{
 		"taskId": task.ID, "type": task.Type, "status": task.Status, "progress": task.Progress,
+		"outputs": task.Outputs, "resultState": task.ResultState,
 		"createdAt": task.CreatedAt, "updatedAt": task.UpdatedAt,
 	}, nil
 }

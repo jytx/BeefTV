@@ -47,19 +47,15 @@ func TestOpsListingKeepsOwnerAndExternalCatalogFull(t *testing.T) {
 	hostListing := getOps(t, env, map[string]string{"X-Beeftv-Agent-Token": assistantTestHostToken})
 	wantHost := make([]string, 0)
 	for _, descriptor := range registry.List(operations.ManualCaller(false)) {
-		// 宿主回合外只看受控白名单：工作区级列举、整页写、对话与项目域操作不在其中
-		//（项目列举没有单资源归属校验，项目写超出画布范围，与 asset.list 同理不可见）。
-		if descriptor.Scope != operations.ScopeConversation && descriptor.Scope != operations.ScopeProject && descriptor.Scope != operations.ScopeAsset &&
-			descriptor.ID != "asset.list" && descriptor.ID != "canvas.search" &&
-			descriptor.ID != "canvas.document.commit" && descriptor.ID != "project.list" && descriptor.ID != "project.get" {
+		if descriptor.Scope != operations.ScopeConversation {
 			wantHost = append(wantHost, descriptor.ID)
 		}
 	}
 	if !reflect.DeepEqual(hostListing, wantHost) {
 		t.Fatalf("宿主回合外能力发现应为 %v，得到 %v", wantHost, hostListing)
 	}
-	if listingHas(hostListing, "asset.list") || listingHas(hostListing, "canvas.search") || listingHas(hostListing, "canvas.document.commit") {
-		t.Fatalf("助手不应看到工作区级或整页写操作: %v", hostListing)
+	if !listingHas(hostListing, "asset.list") || !listingHas(hostListing, "canvas.search") || !listingHas(hostListing, "canvas.document.commit") {
+		t.Fatalf("宿主应能装载完整画布能力，回合内再按Go权限选择: %v", hostListing)
 	}
 }
 
