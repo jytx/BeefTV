@@ -16,9 +16,11 @@ fi
 export GOTOOLCHAIN=local
 
 cd "$ROOT_DIR"
-(cd web && bun run dev -- --host 127.0.0.1 --port 3000) &
+# 前端端口可通过 BEEFTV_DEV_PORT 覆盖，避免与本机其他 Vite 项目（默认 3000）冲突
+FRONTEND_PORT="${BEEFTV_DEV_PORT:-3000}"
+(cd web && bun run dev -- --host 127.0.0.1 --port "$FRONTEND_PORT") &
 VITE_PID=$!
 trap 'kill "$VITE_PID" 2>/dev/null || true' EXIT INT TERM
 
 cd backend/cmd/desktop
-go run github.com/wailsapp/wails/v2/cmd/wails@v2.16.0 dev
+go run github.com/wailsapp/wails/v2/cmd/wails@v2.16.0 dev -frontenddevserverurl "http://127.0.0.1:$FRONTEND_PORT"
