@@ -1,0 +1,223 @@
+{
+  "apiVersion": "beeftv.plugin/v2",
+  "id": "ace-step-audio",
+  "name": "ACE-Step",
+  "version": "1.0.0",
+  "author": "BeefTV Contributors",
+  "description": "ACE-Step 本地音乐生成服务协议插件。",
+  "documentation": "# ACE-Step\n\n该目录是 BeefTV 声明式协议插件源码。后端从生成的 `ace-step-audio.beeftv-plugin` 包加载，用于接入本地部署的 [ACE-Step 1.5](https://github.com/ace-step/ACE-Step) 音乐生成 API 服务。\n\n本插件由 BeefTV Contributors 维护，用于适配 ACE-Step 本地服务接口；不表示 BeefTV 与该服务商存在隶属、授权或合作关系。\n\n完整接口见 [docs/interface.md](docs/interface.md)。\n\n---\n\n# ACE-Step 接口字段\n\n## 协议身份\n\n- 插件 ID：`ace-step-audio`。\n- Provider ID：`ace-step-audio`。\n- 能力：`audio`。\n- 默认 Base URL：`http://127.0.0.1:8001`。\n- 鉴权驱动：`none`（本地服务未启用鉴权时无需真实密钥）。\n- 创建：`POST /release_task`。\n- 查询：`POST /query_result`。\n\n## 前置要求\n\n- 本机已部署 ACE-Step 1.5 API 服务并监听 `127.0.0.1:8001`（可用 `start_api_server_macos.sh` 启动）。\n- 服务端已完成模型下载（DiT 模型与 5Hz LM）。插件默认按服务端加载的模型生成。\n- 服务需应用过 `query_result` 顶层 `audio_paths` 补丁（成功响应直接携带绝对音频下载地址），否则 BeefTV 无法从内嵌 `result` 字符串中提取音频地址。\n- BeefTV 后端出站访问 `127.0.0.1` 需在 `CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS` 中放行该主机。\n\n## 配置字段\n\n| 字段 | 类型 | 必填 | 含义 |\n| --- | --- | --- | --- |\n| `apiKey` | secret | 是 | API Key；服务未启用 `--api-key` 时填写任意占位值即可 |\n\n## 统一字段映射\n\n| 统一字段 | 类型 | 必填 | 上游映射 | 说明 |\n| --- | --- | --- | --- | --- |\n| `model` | string | 是 | `model` | DiT 模型名，如 `acestep-v15-turbo`。 |\n| `prompt` | string | 是 | `prompt` | 音乐风格描述。 |\n| `providerOptions` | object | 否 | `provider-specific fields` | 插件命名空间内的扩展字段。 |\n\n## Provider 扩展键\n\n- `providerOptions.ace-step-audio.lyrics`：歌词文本；留空表示纯音乐。\n- `providerOptions.ace-step-audio.thinking`：是否启用 5Hz LM 规划（默认 `true`）。\n- `providerOptions.ace-step-audio.duration`：音频时长（秒，10–600，默认 60）。\n- `providerOptions.ace-step-audio.batchSize`：一次生成的歌曲数（默认 1）。\n- `providerOptions.ace-step-audio.audioFormat`：输出格式（默认 `mp3`）。\n\n## 上游请求模板逐字段清单\n\n| 上游位置 | 值或转换表达式 |\n| --- | --- |\n| `create.method` | `\"POST\"` |\n| `create.path` | `\"/release_task\"`（`originPath: true`，绝对路径直连，不自动追加版本前缀） |\n| `create.contentType` | `\"application/json\"` |\n| `create.body.prompt` | `{\"$ref\":\"request.prompt\"}` |\n| `create.body.lyrics` | `{\"$coalesce\":[{\"$ref\":\"request.providerOptions.ace-step-audio.lyrics\"},\"\"]}` |\n| `create.body.thinking` | `{\"$coalesce\":[{\"$ref\":\"request.providerOptions.ace-step-audio.thinking\"},true]}` |\n| `create.body.audio_duration` | `{\"$coalesce\":[{\"$toFloat\":{\"$ref\":\"request.providerOptions.ace-step-audio.duration\"}},60]}` |\n| `create.body.audio_format` | `{\"$coalesce\":[{\"$ref\":\"request.extra.audioFormat\"},{\"$ref\":\"request.providerOptions.ace-step-audio.audioFormat\"},\"mp3\"]}` |\n| `create.body.model` | `{\"$omitEmpty\":{\"$ref\":\"request.model\"}}` |\n| `create.body.batch_size` | `{\"$if\":{\"condition\":{\"$gt\":[{\"$toInt\":{\"$ref\":\"request.providerOptions.ace-step-audio.batchSize\"}},0]},\"then\":{\"$toInt\":{\"$ref\":\"request.providerOptions.ace-step-audio.batchSize\"}},\"else\":1}}`（避免 `$toInt(nil)=0` 被 ACE-Step 当作生成 0 首） |\n| `poll.method` | `\"POST\"` |\n| `poll.path` | `\"/query_result\"`（`originPath: true`） |\n| `poll.contentType` | `\"application/json\"` |\n| `poll.body.task_id_list` | `[{\"$ref\":\"taskId\"}]` |\n\n## 响应映射逐字段清单\n\n| 映射位置 | 上游路径或转换表达式 |\n| --- | --- |\n| `response.taskId` | `{\"$coalesce\":[{\"$ref\":\"response.data.task_id\"},{\"$ref\":\"response.data.0.task_id\"}]}` |\n| `response.status` | 数字状态码映射：`2→failed`，`1→succeeded`，其余 `pending` |\n| `response.message` | `{\"$coalesce\":[{\"$ref\":\"response.error\"},{\"$ref\":\"response.data.0.progress_text\"}]}` |\n| `response.audios` | `{\"$coalesce\":[{\"$ref\":\"response.data.0.audio_paths\"},{\"$ref\":\"response.data.0.first_audio_path\"}]}` |\n| `response.errorPaths[0]` | `\"error\"` |\n| `response.resultEphemeral` | `true` |\n\n## 响应与错误\n\n- 上游任务状态为数字：`0` 进行中、`1` 成功、`2` 失败；宿主按映射词归一。\n- 成功时音频地址来自顶层 `audio_paths`（绝对 URL，宿主立即下载持久化）。\n- 队列繁忙时上游返回 HTTP 429，保持失败语义，不包装成成功。\n\n## 兼容边界\n\n- 仅支持文本生成音乐（`text2music`）；翻唱、重绘等参考音频任务暂未接入。\n- 歌词经 `providerOptions` 单字段传入，不做 prompt 拆分。\n\n<!-- BEEFTV_PLUGIN_MANIFEST_START -->\n## Manifest 完整接口定义\n\n以下 JSON 与插件包内实际 `manifest.json` 逐字段一致，覆盖插件身份、权限、配置、鉴权、参数、校验、创建、Agent、查询、取消、结果下载、响应和 Agent 响应映射。`documentation` 字段的值就是当前完整文档；为避免文档在自身内部无限递归，JSON 中仅用等义占位文本表示正文。\n\n```json\n{\n  \"apiVersion\": \"beeftv.plugin/v2\",\n  \"id\": \"ace-step-audio\",\n  \"name\": \"ACE-Step\",\n  \"version\": \"1.0.0\",\n  \"author\": \"BeefTV Contributors\",\n  \"description\": \"ACE-Step 本地音乐生成服务协议插件。\",\n  \"documentation\": \"<当前插件的完整 documentation，由 README.md 与 docs/interface.md 拼接而成；为避免 JSON 递归，此处不重复展开正文。>\",\n  \"permissions\": [\n    \"generation.run\",\n    \"media.read\"\n  ],\n  \"configuration\": {\n    \"fields\": [\n      {\n        \"name\": \"apiKey\",\n        \"type\": \"secret\",\n        \"label\": \"API Key（服务未启用鉴权时填写任意占位值）\",\n        \"required\": true\n      }\n    ]\n  },\n  \"contributes\": {\n    \"providers\": [\n      {\n        \"id\": \"ace-step-audio\",\n        \"label\": \"ACE-Step\",\n        \"capabilities\": [\n          \"audio\"\n        ],\n        \"scopes\": [\n          \"admin.system-channel\",\n          \"user.custom-channel\",\n          \"canvas\",\n          \"creation\",\n          \"agent\"\n        ],\n        \"baseUrl\": \"http://127.0.0.1:8001\",\n        \"requiresPublicMediaUrls\": false,\n        \"auth\": {\n          \"type\": \"none\",\n          \"field\": \"apiKey\"\n        },\n        \"parameters\": [\n          {\n            \"name\": \"model\",\n            \"type\": \"string\",\n            \"required\": true,\n            \"mapping\": \"model\",\n            \"description\": \"DiT 模型名（如 acestep-v15-turbo）；与服务端加载的模型保持一致。\"\n          },\n          {\n            \"name\": \"prompt\",\n            \"type\": \"string\",\n            \"required\": true,\n            \"mapping\": \"prompt\",\n            \"description\": \"音乐风格描述。\"\n          },\n          {\n            \"name\": \"providerOptions\",\n            \"type\": \"object\",\n            \"required\": false,\n            \"mapping\": \"provider-specific fields\",\n            \"description\": \"插件命名空间内的扩展字段：lyrics、thinking、duration、batchSize。\"\n          }\n        ],\n        \"create\": {\n          \"method\": \"POST\",\n          \"path\": \"/release_task\",\n          \"originPath\": true,\n          \"contentType\": \"application/json\",\n          \"body\": {\n            \"prompt\": {\n              \"$ref\": \"request.prompt\"\n            },\n            \"lyrics\": {\n              \"$coalesce\": [\n                {\n                  \"$ref\": \"request.providerOptions.ace-step-audio.lyrics\"\n                },\n                \"\"\n              ]\n            },\n            \"thinking\": {\n              \"$coalesce\": [\n                {\n                  \"$ref\": \"request.providerOptions.ace-step-audio.thinking\"\n                },\n                true\n              ]\n            },\n            \"audio_duration\": {\n              \"$coalesce\": [\n                {\n                  \"$toFloat\": {\n                    \"$ref\": \"request.providerOptions.ace-step-audio.duration\"\n                  }\n                },\n                60\n              ]\n            },\n            \"audio_format\": {\n              \"$coalesce\": [\n                {\n                  \"$ref\": \"request.extra.audioFormat\"\n                },\n                {\n                  \"$ref\": \"request.providerOptions.ace-step-audio.audioFormat\"\n                },\n                \"mp3\"\n              ]\n            },\n            \"model\": {\n              \"$omitEmpty\": {\n                \"$ref\": \"request.model\"\n              }\n            },\n            \"batch_size\": {\n              \"$if\": {\n                \"condition\": {\n                  \"$gt\": [\n                    {\n                      \"$toInt\": {\n                        \"$ref\": \"request.providerOptions.ace-step-audio.batchSize\"\n                      }\n                    },\n                    0\n                  ]\n                },\n                \"then\": {\n                  \"$toInt\": {\n                    \"$ref\": \"request.providerOptions.ace-step-audio.batchSize\"\n                  }\n                },\n                \"else\": 1\n              }\n            }\n          }\n        },\n        \"poll\": {\n          \"method\": \"POST\",\n          \"path\": \"/query_result\",\n          \"originPath\": true,\n          \"contentType\": \"application/json\",\n          \"body\": {\n            \"task_id_list\": [\n              {\n                \"$ref\": \"taskId\"\n              }\n            ]\n          }\n        },\n        \"response\": {\n          \"taskId\": {\n            \"$coalesce\": [\n              {\n                \"$ref\": \"response.data.task_id\"\n              },\n              {\n                \"$ref\": \"response.data.0.task_id\"\n              }\n            ]\n          },\n          \"status\": {\n            \"$if\": {\n              \"condition\": {\n                \"$eq\": [\n                  {\n                    \"$toFloat\": {\n                      \"$ref\": \"response.data.0.status\"\n                    }\n                  },\n                  2\n                ]\n              },\n              \"then\": \"failed\",\n              \"else\": {\n                \"$if\": {\n                  \"condition\": {\n                    \"$eq\": [\n                      {\n                        \"$toFloat\": {\n                          \"$ref\": \"response.data.0.status\"\n                        }\n                      },\n                      1\n                    ]\n                  },\n                  \"then\": \"succeeded\",\n                  \"else\": \"pending\"\n                }\n              }\n            }\n          },\n          \"message\": {\n            \"$coalesce\": [\n              {\n                \"$ref\": \"response.error\"\n              },\n              {\n                \"$ref\": \"response.data.0.progress_text\"\n              }\n            ]\n          },\n          \"audios\": {\n            \"$coalesce\": [\n              {\n                \"$ref\": \"response.data.0.audio_paths\"\n              },\n              {\n                \"$ref\": \"response.data.0.first_audio_path\"\n              }\n            ]\n          },\n          \"errorPaths\": [\n            \"error\"\n          ],\n          \"resultEphemeral\": true\n        }\n      }\n    ]\n  }\n}\n```\n<!-- BEEFTV_PLUGIN_MANIFEST_END -->\n",
+  "permissions": [
+    "generation.run",
+    "media.read"
+  ],
+  "configuration": {
+    "fields": [
+      {
+        "name": "apiKey",
+        "type": "secret",
+        "label": "API Key（服务未启用鉴权时填写任意占位值）",
+        "required": true
+      }
+    ]
+  },
+  "contributes": {
+    "providers": [
+      {
+        "id": "ace-step-audio",
+        "label": "ACE-Step",
+        "capabilities": [
+          "audio"
+        ],
+        "scopes": [
+          "admin.system-channel",
+          "user.custom-channel",
+          "canvas",
+          "creation",
+          "agent"
+        ],
+        "baseUrl": "http://127.0.0.1:8001",
+        "requiresPublicMediaUrls": false,
+        "auth": {
+          "type": "none",
+          "field": "apiKey"
+        },
+        "parameters": [
+          {
+            "name": "model",
+            "type": "string",
+            "required": true,
+            "mapping": "model",
+            "description": "DiT 模型名（如 acestep-v15-turbo）；与服务端加载的模型保持一致。"
+          },
+          {
+            "name": "prompt",
+            "type": "string",
+            "required": true,
+            "mapping": "prompt",
+            "description": "音乐风格描述。"
+          },
+          {
+            "name": "providerOptions",
+            "type": "object",
+            "required": false,
+            "mapping": "provider-specific fields",
+            "description": "插件命名空间内的扩展字段：lyrics、thinking、duration、batchSize。"
+          }
+        ],
+        "create": {
+          "method": "POST",
+          "path": "/release_task",
+          "originPath": true,
+          "contentType": "application/json",
+          "body": {
+            "prompt": {
+              "$ref": "request.prompt"
+            },
+            "lyrics": {
+              "$coalesce": [
+                {
+                  "$ref": "request.providerOptions.ace-step-audio.lyrics"
+                },
+                ""
+              ]
+            },
+            "thinking": {
+              "$coalesce": [
+                {
+                  "$ref": "request.providerOptions.ace-step-audio.thinking"
+                },
+                true
+              ]
+            },
+            "audio_duration": {
+              "$coalesce": [
+                {
+                  "$toFloat": {
+                    "$ref": "request.providerOptions.ace-step-audio.duration"
+                  }
+                },
+                60
+              ]
+            },
+            "audio_format": {
+              "$coalesce": [
+                {
+                  "$ref": "request.extra.audioFormat"
+                },
+                {
+                  "$ref": "request.providerOptions.ace-step-audio.audioFormat"
+                },
+                "mp3"
+              ]
+            },
+            "model": {
+              "$omitEmpty": {
+                "$ref": "request.model"
+              }
+            },
+            "batch_size": {
+              "$if": {
+                "condition": {
+                  "$gt": [
+                    {
+                      "$toInt": {
+                        "$ref": "request.providerOptions.ace-step-audio.batchSize"
+                      }
+                    },
+                    0
+                  ]
+                },
+                "then": {
+                  "$toInt": {
+                    "$ref": "request.providerOptions.ace-step-audio.batchSize"
+                  }
+                },
+                "else": 1
+              }
+            }
+          }
+        },
+        "poll": {
+          "method": "POST",
+          "path": "/query_result",
+          "originPath": true,
+          "contentType": "application/json",
+          "body": {
+            "task_id_list": [
+              {
+                "$ref": "taskId"
+              }
+            ]
+          }
+        },
+        "response": {
+          "taskId": {
+            "$coalesce": [
+              {
+                "$ref": "response.data.task_id"
+              },
+              {
+                "$ref": "response.data.0.task_id"
+              }
+            ]
+          },
+          "status": {
+            "$if": {
+              "condition": {
+                "$eq": [
+                  {
+                    "$toFloat": {
+                      "$ref": "response.data.0.status"
+                    }
+                  },
+                  2
+                ]
+              },
+              "then": "failed",
+              "else": {
+                "$if": {
+                  "condition": {
+                    "$eq": [
+                      {
+                        "$toFloat": {
+                          "$ref": "response.data.0.status"
+                        }
+                      },
+                      1
+                    ]
+                  },
+                  "then": "succeeded",
+                  "else": "pending"
+                }
+              }
+            }
+          },
+          "message": {
+            "$coalesce": [
+              {
+                "$ref": "response.error"
+              },
+              {
+                "$ref": "response.data.0.progress_text"
+              }
+            ]
+          },
+          "audios": {
+            "$coalesce": [
+              {
+                "$ref": "response.data.0.audio_paths"
+              },
+              {
+                "$ref": "response.data.0.first_audio_path"
+              }
+            ]
+          },
+          "errorPaths": [
+            "error"
+          ],
+          "resultEphemeral": true
+        }
+      }
+    ]
+  }
+}
