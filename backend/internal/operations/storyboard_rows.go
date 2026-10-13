@@ -10,7 +10,7 @@ import (
 // storyboardRowFieldSchemas 是分镜行可写字段的白名单（与 canvas.StoryboardRowDraft 一一对应）。
 // append 与 update 的 JSON Schema 共用这份字段表，避免两处定义漂移。
 var storyboardRowFieldSchemas = map[string]map[string]any{
-	"durationSeconds":       {"type": "number", "description": "镜头时长（秒），缺省 6"},
+	"durationSeconds":       {"type": "number", "minimum": canvas.StoryboardMinShotSeconds, "maximum": canvas.StoryboardMaxShotSeconds, "description": "镜头时长（秒），缺省 6"},
 	"plotDescription":       {"type": "string", "description": "本镜剧情描述"},
 	"dialogue":              {"type": "string", "description": "本镜台词"},
 	"narrativeIntent":       {"type": "string", "description": "叙事意图"},
@@ -104,7 +104,7 @@ func opStoryboardRowsAppend(ctx *Context, params json.RawMessage) (any, error) {
 		return nil, mapDomainError(err)
 	}
 	return canvasWriteResult(ctx, args.CanvasID, func(doc map[string]any) map[string]any {
-		return map[string]any{"nodeId": args.NodeID, "created": created, "rowCount": len(docStoryboardRows(doc, args.NodeID))}
+		return map[string]any{"canvasId": args.CanvasID, "nodeId": args.NodeID, "created": created, "rowCount": len(docStoryboardRows(doc, args.NodeID))}
 	})
 }
 
@@ -126,7 +126,7 @@ func opStoryboardRowUpdate(ctx *Context, params json.RawMessage) (any, error) {
 		return nil, mapDomainError(err)
 	}
 	return canvasWriteResult(ctx, args.CanvasID, func(doc map[string]any) map[string]any {
-		return map[string]any{"nodeId": args.NodeID, "updated": updated, "rowCount": len(docStoryboardRows(doc, args.NodeID))}
+		return map[string]any{"canvasId": args.CanvasID, "nodeId": args.NodeID, "updated": updated, "rowCount": len(docStoryboardRows(doc, args.NodeID))}
 	})
 }
 
@@ -143,12 +143,30 @@ func opStoryboardRowRemove(ctx *Context, params json.RawMessage) (any, error) {
 	if strings.TrimSpace(args.CanvasID) == "" || strings.TrimSpace(args.NodeID) == "" {
 		return nil, InvalidArg("invalid_params", "canvasId 与 nodeId 必填")
 	}
+	before, err := ctx.Domain.UserCanvasProject(ctx.UserID, args.CanvasID)
+	if err != nil {
+		return nil, mapDomainError(err)
+	}
+	var previous map[string]any
+	if err := json.Unmarshal(before, &previous); err != nil {
+		return nil, AsError(err)
+	}
 	_, remaining, err := ctx.Domain.RemoveUserCanvasStoryboardRows(ctx.UserID, args.CanvasID, args.NodeID, args.RowIDs, args.ExpectedRevision)
 	if err != nil {
 		return nil, mapDomainError(err)
 	}
 	return canvasWriteResult(ctx, args.CanvasID, func(doc map[string]any) map[string]any {
-		return map[string]any{"nodeId": args.NodeID, "removed": len(args.RowIDs), "rowCount": remaining}
+		current := map[string]bool{}
+		connections, _ := doc["connections"].([]any)
+		for _, raw := range connections {
+			if edge, ok := raw.(map[string]any); ok {
+				if id, ok := edge["id"].(string); ok {
+					current[id] = true
+				}
+			}
+		}
+		deleted, _ := removeCanvasEdges(previous, func(edge map[string]any) bool { id, _ := edge["id"].(string); return !current[id] })
+		return map[string]any{"canvasId": args.CanvasID, "nodeId": args.NodeID, "removed": len(args.RowIDs), "rowCount": remaining, "deletedEdgeIds": deleted}
 	})
 }
 

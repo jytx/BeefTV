@@ -218,9 +218,24 @@ func (c *client) refreshBaseURL() {
 	c.baseURLSrc = src
 }
 
+// currentBaseURL 每次派发前重读运行时描述：桌面工作区重启后端口会变，运行中的
+// CLI/MCP 进程靠这里跟上新地址，不需要重启会话；描述文件消失（工作区已退出）时
+// 如实返回空地址，绝不拿缓存端口向陈旧端点发请求。显式 BEEFTV_BASE_URL 是调用方
+// 钉死的配置，不重读。
 func (c *client) currentBaseURL() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.baseURLSrc == baseSourceEnv {
+		return c.baseURL
+	}
+	c.baseURL = ""
+	c.baseURLSrc = baseSourceMissing
+	if info, found := runtimeinfo.Discover(""); found {
+		if normalized, err := validateBaseURL(info.BaseURL); err == nil {
+			c.baseURL = normalized
+			c.baseURLSrc = baseSourceRuntime
+		}
+	}
 	return c.baseURL
 }
 

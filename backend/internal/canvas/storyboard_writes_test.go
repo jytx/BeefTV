@@ -9,6 +9,19 @@ import (
 	"infinite-canvas/backend/internal/kernel"
 )
 
+func TestStoryboardPromptEditClearsOnlyChangedTemplate(t *testing.T) {
+	image, video := "new image", "same video"
+	row := map[string]any{"imageGenerationPrompt": "old image", "videoMotionPrompt": video,
+		"imagePromptTemplateVariables": map[string]any{"old": true}, "videoPromptTemplateVariables": map[string]any{"keep": true}}
+	applyStoryboardRowDraft(row, StoryboardRowDraft{ImageGenerationPrompt: &image, VideoMotionPrompt: &video})
+	if _, exists := row["imagePromptTemplateVariables"]; exists {
+		t.Fatal("new prompt still overridden by old template")
+	}
+	if row["videoPromptTemplateVariables"] == nil {
+		t.Fatal("unchanged prompt lost its template")
+	}
+}
+
 func storyboardFixture(t *testing.T) (*Service, string, string, int64) {
 	t.Helper()
 	svc := newCanvasHistoryTestService(t)

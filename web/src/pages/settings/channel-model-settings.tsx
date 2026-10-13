@@ -35,14 +35,14 @@ export function ChannelModelSettings({ channel, onChange, draft = false }: { cha
         return () => { active = false; };
     }, []);
 
-    // 模型列表为空时给出明确引导，而不是整个配置区静默消失，避免用户找不到入口。
-    if (!channel.models.length) {
-        return (
-            <p className="mt-4 px-1 text-xs text-foreground/45">
-                请先在上方「模型列表」中输入模型名并回车（或点击拉取模型），添加后即可在这里为每个模型配置能力与请求协议。
+    if (!channel.models.length) return (
+        <div className="mt-4">
+            <div className="text-xs font-medium">模型能力与请求协议</div>
+            <p className="mt-2 text-xs leading-5 text-foreground/58">
+                先在上方「模型列表」输入模型名并按回车，再为模型选择能力与请求协议。
             </p>
-        );
-    }
+        </div>
+    );
 
     const updateProfile = (model: string, patch: Partial<ModelProfile>) => {
         const defaultProtocol = defaultProtocolForModel(model, availableProtocols);
