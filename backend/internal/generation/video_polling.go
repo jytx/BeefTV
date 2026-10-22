@@ -17,6 +17,8 @@ import (
 
 const DefaultVideoPollInterval = 30 * time.Second
 
+const beefAPIVideoPollInterval = 5 * time.Second
+
 type VideoPollPolicy struct {
 	InitialDelay          time.Duration
 	Interval              time.Duration
@@ -65,6 +67,18 @@ func DefaultVideoPollPolicy() VideoPollPolicy {
 		Sleep:                 SleepContext,
 		Notify:                NotifyPollEvent,
 	}
+}
+
+func videoPollPolicyForConfig(ctx context.Context, config Config, policy VideoPollPolicy) VideoPollPolicy {
+	if IsBeefAPIVideoConfig(ctx, config) {
+		if policy.InitialDelay == DefaultVideoPollInterval {
+			policy.InitialDelay = beefAPIVideoPollInterval
+		}
+		if policy.Interval == DefaultVideoPollInterval {
+			policy.Interval = beefAPIVideoPollInterval
+		}
+	}
+	return policy
 }
 
 func RunVideoPollLoop(ctx context.Context, taskID string, policy VideoPollPolicy, query func(context.Context) (VideoPollOutcome, error)) (map[string]interface{}, error) {
@@ -162,6 +176,11 @@ func RunVideoDownload(ctx context.Context, taskID string, policy VideoPollPolicy
 	if err := setExecutionStage(ctx, runtime, "正在取回生成结果"); err != nil {
 		return nil, "", err
 	}
+	ctx, cleanup, err := withVideoDownloadPartial(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	defer cleanup()
 	policy = NormalizeVideoPollPolicy(policy)
 	reporter := newVideoDownloadReporter(runtime.Delivery)
 	defer reporter.clear()
@@ -212,9 +231,17 @@ func RetryableVideoPollError(ctx context.Context, err error) (retry bool, notFou
 	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return false, false
 	}
+	var preparation RequestPreparationError
+	if errors.As(err, &preparation) {
+		return false, false
+	}
 	var downloadError VideoDownloadError
 	if errors.As(err, &downloadError) {
 		return false, false
+	}
+	var expiredBackup videoBackupLinkExpiredError
+	if errors.As(err, &expiredBackup) {
+		return true, false
 	}
 	if code, _ := platform.ChannelSlotFailureDetails(err); code != "" {
 		return true, false
@@ -227,6 +254,9 @@ func RetryableVideoPollError(ctx context.Context, err error) (retry bool, notFou
 		return true, false
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.ErrClosedPipe) || outbound.IsConnectionInterrupted(err) {
+		return true, false
+	}
+	if errors.Is(err, outbound.ErrResumeRestart) {
 		return true, false
 	}
 	if errors.Is(err, context.DeadlineExceeded) {

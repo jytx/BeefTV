@@ -29,7 +29,7 @@ jobs:
           cache-dependency-path: backend/go.sum
       - name: Verify migration with real Windows file locks
         working-directory: backend
-        run: go test ./internal/desktopstorage -count=1 -v
+        run: go test ./internal/environment ./internal/desktopstorage -count=1 -v
       - uses: msys2/setup-msys2@v2
         id: storage-msys2
         with:
@@ -43,6 +43,13 @@ jobs:
       - name: Verify open desktop migration and rollback
         working-directory: backend
         run: go test ./cmd/desktop -run 'TestWindowsOpenDesktopMigratesWithBusyScratch|TestNativeMigration' -count=1 -v
+      - name: Verify diagnostic persistence and offline analysis on Windows
+        working-directory: backend
+        run: |
+          go test ./internal/supporttrace ./internal/diagnostics ./internal/assistantdiagnostics -count=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test ./cmd/beeftv -run '^TestOfflineDiagnostics' -count=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   released-windows-upgrades:
     if: github.event_name == 'workflow_dispatch'
@@ -77,7 +84,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test immutable publication and activation
         run: |
+          node --test scripts/image-preparation-release-contract.test.mjs
+          node --test scripts/music3-release-contract.test.mjs
+          node --test scripts/v201-release-contract.test.mjs
           python3 -m unittest discover -s scripts -p 'test_publish_desktop_r2.py'
+          node --test scripts/distribution-notices.test.mjs
+          python3 -m unittest discover -s scripts -p 'test_package_macos_media_source.py'
+          python3 -m unittest discover -s scripts -p 'test_package_wasm_sources.py'
+          python3 -m unittest discover -s scripts -p 'test_desktop_cos_store.py'
           python3 -m unittest discover -s scripts -p 'test_smoke_desktop_installer.py'
 
   backend:
@@ -96,7 +110,7 @@ jobs:
           cache-dependency-path: backend/go.sum
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.15.0'
+          node-version: '24.22.1'
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
@@ -115,6 +129,9 @@ jobs:
         run: sh ../plugin-packages/build-packages.sh
       - name: Run Go tests
         run: go test ./...
+      - name: Verify real production timing report
+        working-directory: agent-host/eval
+        run: python3 -m unittest report_production_test.py
 
   web:
     name: Web checks
@@ -146,6 +163,13 @@ jobs:
         run: |
           bunx playwright install --with-deps chromium
           bun run test
+      - name: Preserve environment check screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: environment-check-screenshots-${{ github.sha }}
+          path: output/environment-check/*.png
+          if-no-files-found: warn
 
   database-platforms:
     if: github.event_name == 'workflow_dispatch'

@@ -26,6 +26,7 @@ func taskSummariesForOutput(tasks []model.Task) []TaskSummary {
 }
 
 func taskSummaryForOutput(task model.Task) TaskSummary {
+	task = correctPersistedVODParameterFailure(task)
 	errorCode := persistedFailureErrorCode(task.Error, task.Stage)
 	if errorCode == string(generation.CategoryUnknown) && !isContentModerationFailure(task.Error) {
 		errorCode = ""
@@ -51,7 +52,7 @@ func taskSummaryForOutput(task model.Task) TaskSummary {
 		ProviderCancelAttempts:    task.ProviderCancelAttempts,
 		ProviderCancelRequestedAt: task.ProviderCancelRequestedAt,
 		ProviderCancelledAt:       task.ProviderCancelledAt,
-		Error:                     safePersistedFailureMessage(task.Error),
+		Error:                     safePersistedFailureMessage(task.Error, task.Stage),
 		ErrorCode:                 errorCode,
 		FailureDiagnostics:        generation.SanitizeTaskDiagnostics(task.FailureDiagnostics),
 		PreviewURL:                previewURL,
@@ -226,6 +227,7 @@ func truncateRunes(value string, limit int) string {
 }
 
 func taskForOutput(task model.Task) *model.Task {
+	task = correctPersistedVODParameterFailure(task)
 	task.FailureDiagnostics = generation.SanitizeTaskDiagnostics(task.FailureDiagnostics)
 	task.InputJSON = publicTaskInputJSON(task.InputJSON)
 	// 普通任务接口只暴露前台模型身份；渠道模型和供应线路属于管理员内部信息。
@@ -236,13 +238,16 @@ func taskForOutput(task model.Task) *model.Task {
 	if task.ErrorCode == string(generation.CategoryUnknown) && !isContentModerationFailure(task.Error) {
 		task.ErrorCode = ""
 	}
-	task.Error = safePersistedFailureMessage(task.Error)
+	task.Error = safePersistedFailureMessage(task.Error, task.Stage)
 	return &task
 }
 
-func safePersistedFailureMessage(message string) string {
+func safePersistedFailureMessage(message, stage string) string {
 	if strings.TrimSpace(message) == "" {
 		return ""
+	}
+	if stage == "submission_unknown" {
+		return (generation.Failure{Category: generation.CategorySubmissionUncertain}).UserMessage()
 	}
 	return generation.ClassifyText(message).UserMessage()
 }
@@ -287,4 +292,25 @@ func publicTaskInputJSON(raw string) string {
 	}
 	data, _ := json.Marshal(public)
 	return string(data)
+}
+
+// Read-time projection repairs an old uncertainty label only when one complete
+// recorded HTTP response proves a structured parameter failure. Raw history stays intact.
+func correctPersistedVODParameterFailure(task model.Task) model.Task {
+	d := task.FailureDiagnostics
+	if task.Type != "canvas_image" || task.Status != model.TaskStatusFailed || task.Stage != "submission_unknown" || d == nil || d.OmittedRequests != 0 || len(d.Requests) != 1 {
+		return task
+	}
+	r := d.Requests[0]
+	if !r.Dispatched || r.Outcome != "http_error" || r.HTTPStatus != 400 || r.ProviderCode != d.ProviderCode || d.HTTPStatus != 400 || (r.ProviderCode != "vod_image_invalid_params" && r.ProviderCode != "vod_image_invalid_media") {
+		return task
+	}
+	raw, _ := json.Marshal(map[string]any{"error": map[string]string{"code": r.ProviderCode}})
+	failure := generation.ClassifyError(providerHTTPError{StatusCode: 400, Body: string(raw)})
+	task.Stage = "生成失败"
+	task.Error = failure.UserMessage()
+	task.FailureDiagnostics = generation.SanitizeTaskDiagnostics(d)
+	task.FailureDiagnostics.Summary = failure.UserMessage()
+	task.FailureDiagnostics.Stage = task.Stage
+	return task
 }

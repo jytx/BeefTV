@@ -57,6 +57,9 @@ export type ImageCapabilityConfig = {
     responseFormat: { supported: boolean };
     outputFormat: { supported: boolean };
     maxOutputs: number;
+    fixedOutputs?: number;
+    /** Total outputs orchestrated across native fixed-size requests. */
+    generationOutputs?: number[];
 };
 
 export type VideoCapabilityConfig = {
@@ -93,6 +96,8 @@ export type VideoCapabilityConfig = {
         maxAudioTotalDurationSeconds?: number;
     };
     duration: {
+		continuous?: boolean;
+		fractionalMin?: number;
         selection: "range" | "enum";
         min?: number;
         max?: number;
@@ -268,6 +273,11 @@ function sanitizeCatalogDuration(input: Record<string, unknown>): VideoCapabilit
     const defaultValue = catalogWholeNumber(input.default);
     if ((selection !== "range" && selection !== "enum") || defaultValue === null) return null;
     if (selection === "range") {
+        if (input.continuous===true) {
+            const min=Number(input.min),max=Number(input.max),step=Number(input.step),fractionalMin=Number(input.fractionalMin ?? input.min);
+            if (![min,max,step,fractionalMin].every(Number.isFinite) || fractionalMin<.92 || fractionalMin>min || max<min || max>3600 || step<=0 || defaultValue<min || defaultValue>max) return null;
+            return {selection,min,max,step,fractionalMin,default:defaultValue,continuous:true};
+        }
         const min = catalogWholeNumber(input.min);
         const max = catalogWholeNumber(input.max);
         const step = catalogWholeNumber(input.step);
@@ -345,7 +355,7 @@ const defaultImageSizes = [
     "1024x1536",
     "1024x1280",
     "1280x1024",
-    "2048x878",
+    "2048x880",
     "1824x1024",
     "1024x1824",
     "2048x2048",
@@ -370,6 +380,18 @@ const defaultImageSizes = [
     "2160x3840",
 ];
 
+export function upgradeGPTImageCapability(profile: ImageCapabilityConfig, protocol: ModelProtocol | undefined, model: string): ImageCapabilityConfig {
+    if (protocol !== "openai-image" || !["gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"].includes(model.trim().toLowerCase())) return profile;
+    if (!Array.isArray(profile.quality?.values) || !Array.isArray(profile.size?.values)) return profile;
+    const defaults = defaultImageCapabilityConfig(protocol, model);
+    const legacyQuality = profile.quality.supported && profile.quality.default === "auto" && profile.quality.values.length === 4 && ["auto", "low", "medium", "high"].every((value) => profile.quality.values.includes(value));
+    const quality = legacyQuality && (model.trim().toLowerCase() === "gpt-image-2" || defaults.quality.values.includes("xhigh"))
+        ? { ...profile.quality, values: [...defaults.quality.values], default: defaults.quality.default } : profile.quality;
+    const fixSize = (value: string) => value === "2048x878" ? "2048x880" : value;
+    return { ...profile, quality, size: { ...profile.size, values: profile.size.values.map(fixSize), default: fixSize(profile.size.default),
+        ...(Array.isArray(profile.size.presets) ? { presets: profile.size.presets.map((preset) => preset.size === "2048x878" ? { ...preset, size: "2048x880", height: 880 } : preset) } : {}) } };
+}
+
 export function defaultImageCapabilityConfig(protocol?: ModelProtocol, model = ""): ImageCapabilityConfig {
     const image: ImageCapabilityConfig = {
         references: { promptMaxChars: 32000, maxImages: 16, maxImageBytes: 30 * 1024 * 1024, maskSupported: true },
@@ -380,14 +402,21 @@ export function defaultImageCapabilityConfig(protocol?: ModelProtocol, model = "
         outputFormat: { supported: true },
         maxOutputs: 15,
     };
+    if (protocol === "openai-image" && ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"].includes(model.trim().toLowerCase())) {
+        image.quality.values = ["auto", "low", "medium", "high", "xhigh", "max"];
+    }
+    if (protocol === "openai-image" && model.trim().toLowerCase() === "gpt-image-2") {
+        image.quality = { supported: true, values: ["low", "medium", "high"], default: "low" };
+    }
     const contract = protocol === "openai-image" ? beefAPIImageContract(model) : undefined;
     if (contract) {
+        const presets = "presets" in contract ? contract.presets as ImageResolutionOption[] : undefined;
         return {
             references: { promptMaxChars: contract.promptMaxChars, maxImages: contract.maxImages, maxImageBytes: contract.maxImageBytes, maskSupported: false },
-            size: { parameter: "size", values: Object.keys(contract.sizes), default: "1:1", allowCustom: true },
+            size: { parameter: "size", values: [...new Set([...Object.keys(contract.sizes), ...(contract.fixedOutputs ? Object.values(contract.sizes) : []), ...(presets?.flatMap((preset) => [preset.ratio, preset.size]) || [])])], default: "1:1", allowCustom: contract.minSide !== contract.maxSide, ...(presets ? { presets } : {}) },
             quality: { supported: false, values: [], default: "auto" },
             transparentBackground: { supported: false, default: false },
-            responseFormat: { supported: false }, outputFormat: { supported: false }, maxOutputs: 1,
+            responseFormat: { supported: Boolean(contract.fixedOutputs) }, outputFormat: { supported: false }, maxOutputs: contract.fixedOutputs || 1, fixedOutputs: contract.fixedOutputs, generationOutputs: "generationOutputs" in contract ? contract.generationOutputs as number[] : undefined,
         };
     }
     if (protocol === "grok-image") {
@@ -540,7 +569,7 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.duration = { selection: "enum", values: [4, 6, 8], default: 6 };
         video.resolutions = ["720p", "1080p"];
     }
-    if (protocol === "volcengine-ark-video" || protocol === "volcengine-ark-agent-plan-video" || protocol === "newapi-channel-1" || protocol === "newapi-channel-2") {
+    if (protocol === "volcengine-ark-video" || protocol === "volcengine-ark-agent-plan-video" || protocol === "newapi-channel-1" || protocol === "newapi-channel-2" || protocol === "video-generations-json") {
         video.references.maxVideos = 3;
         video.references.maxAudios = 3;
         video.references.maxVideoBytes = 200 * 1024 * 1024;
@@ -557,10 +586,17 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
     if (protocol === "volcengine-ark-video" || protocol === "volcengine-ark-agent-plan-video") {
         video.watermark = { supported: true, default: false };
         video.operations.push("reference_to_video");
+        if (/^dreamina-seedance-2-0-(?:fast|mini)(?:-|$)/.test(model.toLowerCase().split("/").pop() || "")) video.resolutions = ["480p", "720p"];
     }
     if (protocol === "newapi-channel-2") {
         // APIMart 的 Seedance 2.0 Video Generations 协议支持参考视频/音频，
         // 但不是火山方舟 Agent Plan，因此单独声明全模态参考能力。
+        video.operations.push("reference_to_video");
+    }
+    if (protocol === "video-generations-json") {
+        video.duration.default = 5;
+        video.resolutions = ["720p", "1080p"];
+        video.watermark = { supported: true, default: false };
         video.operations.push("reference_to_video");
     }
     if (protocol === "novita-video") {
@@ -618,6 +654,11 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
             video.duration = { ...video.duration, max: 30 };
         }
     }
+    if (isVolcengineArkVideoProtocol(protocol) && /^dreamina-seedance-2[.-](?:0|5)(?:-|$)/.test(model.trim().toLowerCase().split("/").pop() || "")) {
+        video.duration = { ...video.duration, selection: "enum", min: 4, values: [-1, ...Array.from({ length: (video.duration.max || 15) - 3 }, (_, index) => index + 4)] };
+        video.ratios = [...video.ratios, "adaptive"];
+        if (isSeedance25Model(model)) video.operations = [...video.operations, "inpaint", "extend"];
+    }
     return { version: 1, text, image: defaultImageCapabilityConfig(protocol, model), video };
 }
 
@@ -653,6 +694,10 @@ export function modelCapabilityConfigFor(
     const profile = channel?.modelProfiles?.find((item) => item.model === modelName && item.capabilityConfig && !Array.isArray(item.capabilityConfig)) || channel?.modelProfiles?.find((item) => item.model === modelName);
     const protocol = profile?.protocol || channel?.interfaceType;
     const fallback = defaultModelCapabilityConfig(protocol, modelName);
+    // Official gateway contracts also upgrade capabilities cached by older installs.
+    try {
+        if (protocol === "openai-image" && beefAPIImageContract(modelName)?.fixedOutputs && ["beeftv.app", "beefapi.com", "enterprise.beefapi.com", "whatstoken.ai", "www.whatstoken.ai"].includes(new URL(channel?.baseUrl || "").hostname.toLowerCase())) return fallback;
+    } catch { /* Config without a public endpoint uses its stored capabilities. */ }
     const alignMaterialPixels = (video: VideoCapabilityConfig | undefined) => {
         let host = "";
         try { host = new URL(channel?.baseUrl || "").hostname.toLowerCase(); } catch { /* no public URL */ }
@@ -700,7 +745,7 @@ function isSeedance2Family(protocol: ModelProtocol | undefined, modelName: strin
 
 export function isSeedance25Model(modelName: string) {
     const base = String(modelName).trim().toLowerCase().split("/").pop() || "";
-    return /^seedance-2\.5(?:-|$)/.test(base) || /^doubao-seedance-2[.-]5(?:-|$)/.test(base);
+    return /^seedance-2\.5(?:-|$)/.test(base) || /^(?:doubao|dreamina)-seedance-2[.-]5(?:-|$)/.test(base);
 }
 
 function overlayOfficialSeedance2References(base: VideoCapabilityConfig["references"], is25: boolean): VideoCapabilityConfig["references"] {
@@ -1305,16 +1350,17 @@ export function normalizeImageValue(profile: ImageCapabilityConfig, value: { siz
     // 预设档位带入请求。仅在 quality 未声明支持时启用，避免与 auto/low/medium/high
     // 这组真实图片质量语义混用。
     const presetTier = !profile.quality.supported ? imagePresetTierForSelection(profile, size) : undefined;
-    const quality = profile.quality.supported
+    const quality = profile.fixedOutputs && profile.size.presets?.length ? "auto" : profile.quality.supported
         ? requestedQuality === "auto" || requestedQuality === "any"
-            ? "auto"
+            ? profile.quality.values.includes("auto") ? "auto" : profile.quality.default
             : value.quality && profile.quality.values.includes(value.quality)
               ? value.quality
               : profile.quality.default || "auto"
         : requestedQuality === "1k" || requestedQuality === "2k" || requestedQuality === "4k"
           ? requestedQuality
           : presetTier || profile.quality.default || "auto";
-    const count = String(Math.max(1, Math.min(profile.maxOutputs, Math.floor(Math.abs(Number(value.count)) || 1))));
+    const requestedCount = Math.floor(Math.abs(Number(value.count)) || 1);
+    const count = String(profile.fixedOutputs ? (profile.generationOutputs?.includes(requestedCount) ? requestedCount : profile.fixedOutputs) : Math.max(1, Math.min(profile.maxOutputs, requestedCount)));
     const transparentBackground = profile.transparentBackground.supported && value.transparentBackground === "true" ? "true" : "false";
     return { size, quality, count, transparentBackground };
 }
@@ -1376,17 +1422,19 @@ export function videoResolutionRequest(profile: VideoCapabilityConfig, value: st
 }
 
 function normalizeRangeDuration(profile: VideoCapabilityConfig, value: number) {
-    const min = profile.duration.min || 1;
+    const min = profile.duration.continuous ? profile.duration.fractionalMin || profile.duration.min || .92 : profile.duration.min || 1;
     const max = profile.duration.max || min;
     const step = profile.duration.step || 1;
-    const candidate = Number.isFinite(value) ? Math.floor(value) : profile.duration.default;
+    const candidate = Number.isFinite(value) ? (profile.duration.continuous ? value : Math.floor(value)) : profile.duration.default;
     const clamped = Math.min(max, Math.max(min, candidate));
+	if (profile.duration.continuous) return clamped;
     const maxStep = Math.max(0, Math.floor((max - min) / step));
     return min + Math.min(maxStep, Math.max(0, Math.round((clamped - min) / step))) * step;
 }
 
 export function videoDurationOptions(profile: VideoCapabilityConfig) {
     if (profile.duration.selection === "enum") return profile.duration.values || [];
+	if (profile.duration.continuous) return [profile.duration.fractionalMin || profile.duration.min || .92,...Array.from({length:15},(_,i)=>i+1)];
     const min = profile.duration.min || 1;
     const max = profile.duration.max || min;
     const step = profile.duration.step || 1;
@@ -1396,8 +1444,8 @@ export function videoDurationOptions(profile: VideoCapabilityConfig) {
 export function videoDurationAllowed(profile: VideoCapabilityConfig, value: number) {
     if (value === -1) return (profile.duration.values || []).includes(-1);
     if (profile.duration.selection === "enum") return (profile.duration.values || []).includes(value);
-    const min = profile.duration.min || 1;
+    const min = profile.duration.continuous ? profile.duration.fractionalMin || profile.duration.min || .92 : profile.duration.min || 1;
     const max = profile.duration.max || min;
     const step = profile.duration.step || 1;
-    return value >= min && value <= max && (value - min) % step === 0;
+    return Number.isFinite(value) && value >= min && value <= max && (profile.duration.continuous || Math.abs((value-min)/step-Math.round((value-min)/step))<1e-7);
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -28,12 +29,15 @@ import (
 	"infinite-canvas/backend/internal/prompts"
 	"infinite-canvas/backend/internal/repository"
 	"infinite-canvas/backend/internal/skills"
+	"infinite-canvas/backend/internal/supporttrace"
 	localtask "infinite-canvas/backend/internal/task"
 	"infinite-canvas/backend/internal/taskdelivery"
 	"infinite-canvas/backend/internal/textreplay"
 )
 
 type Service struct {
+	canvasWorkflowMu         sync.Mutex
+	canvasWorkflowLoop       bool
 	repo                     *repository.Repository
 	dataDir                  string
 	mode                     serviceMode
@@ -69,12 +73,17 @@ type Service struct {
 	projects                 *localproject.Service
 	canvas                   *canvas.Service
 	assistantTurns           *assistantturns.Service
+	continuationBackground   assistantContinuationBackground
 	assets                   *localasset.Service
 	assetsOnce               sync.Once
 	appearance               *appearance.Service
 	appearanceOnce           sync.Once
 	diagnostics              *diagnostics.Service
 	diagnosticsOnce          sync.Once
+	supportTraceOnce         sync.Once
+	supportTraceRecorder     *supporttrace.Recorder
+	supportTraceErr          error
+	supportTraceClosed       atomic.Bool
 	playback                 *playback.Service
 	playbackOnce             sync.Once
 	depthCapture             *depthcapture.Service
@@ -85,6 +94,7 @@ type Service struct {
 	deliveryMu               sync.Mutex
 	deliveryProgress         *deliveryProgressRegistry
 	deliveryProgressOnce     sync.Once
+	referenceProgress        sync.Map
 	deliveryControlMu        sync.Mutex
 	deliveryCancels          map[string]context.CancelFunc
 	deliveryDeadlines        map[string]time.Time
@@ -239,6 +249,10 @@ func (s *Service) Task(userID string, id string) (*model.Task, error) {
 	return s.taskDomain().Get(userID, id)
 }
 
+func (s *Service) TaskByClientOperation(userID, projectID, operationID string) (*model.Task, error) {
+	return s.taskDomain().FindOperation(userID, projectID, operationID)
+}
+
 func (s *Service) hydrateTaskProviderRequestID(task *model.Task) {
 	if task == nil || task.ProviderRequestID != "" {
 		return
@@ -277,8 +291,13 @@ func (s *Service) RetryTask(userID string, id string) (*model.Task, error) {
 	if s.IsDraining() {
 		return s.taskDomain().Retry(userID, id)
 	}
-	if task, err := s.repo.TaskForUser(userID, id); err == nil && task.Status == model.TaskStatusSucceeded && deliveryPaused(task.Stage) {
-		return s.resumeGenerationDownload(*task)
+	if task, err := s.repo.TaskForUser(userID, id); err == nil {
+		if task.Status == model.TaskStatusSucceeded && deliveryPaused(task.Stage) {
+			return s.resumeGenerationDownload(*task)
+		}
+		if restored, handled, err := s.recoverAcceptedImage(*task); handled {
+			return restored, err
+		}
 	}
 	return s.taskDomain().Retry(userID, id)
 }
@@ -377,6 +396,13 @@ func (s *Service) cancelActiveTask(id string) {
 	if cancel != nil {
 		cancel()
 	}
+	s.deliveryControlMu.Lock()
+	for identity, stop := range s.deliveryCancels {
+		if strings.HasPrefix(identity, id+":") {
+			stop()
+		}
+	}
+	s.deliveryControlMu.Unlock()
 }
 
 func nodeOp(id string, nodeType string, title string, x int, y int, workflowKind string, content string) map[string]any {

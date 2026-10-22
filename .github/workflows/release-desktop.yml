@@ -19,6 +19,12 @@ env:
   GOTOOLCHAIN: local
   BEEFTV_UPDATER_FEED_URL: https://updates.beefapi.com/beeftv/desktop-update.json
   UPDATER_DOWNLOAD_BASE: https://updates.beefapi.com/beeftv
+  RELEASE_ENDPOINT: ${{ vars.BEEFTV_R2_ENDPOINT }}
+  RELEASE_REGION: auto
+  RELEASE_BUCKET: beeftv-releases
+  LEGACY_COS_ENDPOINT: https://cos.ap-guangzhou.myqcloud.com
+  LEGACY_COS_REGION: ap-guangzhou
+  LEGACY_COS_BUCKET: beeftv-components-1481187348
 
 jobs:
   preflight:
@@ -46,6 +52,8 @@ jobs:
           fi
 
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -64,15 +72,17 @@ jobs:
         env:
           BEEFTV_UPDATER_PRIVATE_KEY: ${{ secrets.BEEFTV_UPDATER_PRIVATE_KEY }}
           BEEFTV_UPDATER_PUBLIC_KEY: ${{ vars.BEEFTV_UPDATER_PUBLIC_KEY }}
-          R2_ENDPOINT: ${{ vars.BEEFTV_R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.BEEFTV_R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.BEEFTV_R2_SECRET_ACCESS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.BEEFTV_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BEEFTV_R2_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
-          if [[ -z "$R2_ENDPOINT" || -z "$R2_ACCESS_KEY_ID" || -z "$R2_SECRET_ACCESS_KEY" ]]; then
+          if [[ -z "$RELEASE_ENDPOINT" || -z "$AWS_ACCESS_KEY_ID" || -z "$AWS_SECRET_ACCESS_KEY" ]]; then
             echo "Missing bucket-scoped R2 release credentials or endpoint."
             exit 1
           fi
+          python3 scripts/publish-desktop-r2.py check-store --provider r2 \
+            --endpoint-url "$RELEASE_ENDPOINT" --region "$RELEASE_REGION" \
+            --bucket "$RELEASE_BUCKET" --public-base "$UPDATER_DOWNLOAD_BASE"
           if [[ -z "${BEEFTV_UPDATER_PRIVATE_KEY:-}" ]]; then
             echo "Missing GitHub Actions secret BEEFTV_UPDATER_PRIVATE_KEY."
             echo "It must be standard base64 of a 64-byte Ed25519 private key."
@@ -89,6 +99,15 @@ jobs:
             exit 1
           fi
 
+      - name: Check legacy COS feed bridge
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.BEEFTV_COS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BEEFTV_COS_SECRET_ACCESS_KEY }}
+        run: |
+          python3 scripts/publish-desktop-r2.py check-store --provider cos \
+            --endpoint-url "$LEGACY_COS_ENDPOINT" --region "$LEGACY_COS_REGION" \
+            --bucket "$LEGACY_COS_BUCKET"
+
       - name: Validate version, changelog, keys, and uniqueness
         id: meta
         env:
@@ -103,7 +122,7 @@ jobs:
           go test ./cmd/update-release
 
           curl --fail --location --retry 3 --max-time 60 \
-            https://github.com/glanderness/BeefTV/releases/download/depth-runtime-v2/depth-runtime-manifest.v2.json \
+            https://github.com/glanderness/BeefTV/releases/download/depth-runtime-mirrors-v1/depth-runtime-manifest.v2.json \
             --output "$RUNNER_TEMP/depth-manifest.json"
           go run ./cmd/update-release verify-depth --input "$RUNNER_TEMP/depth-manifest.json"
 
@@ -159,6 +178,19 @@ jobs:
       - name: Local release contract gate
         run: ./scripts/verify-beeftv-local-release.sh
 
+      - name: Package corresponding WASM source
+        run: |
+          python3 scripts/package-wasm-sources.py \
+            --version "${{ steps.meta.outputs.version }}" \
+            --binary-dir web/node_modules/@ffmpeg/core/dist/esm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media-wasm-source
+          path: dist/BeefTV-${{ steps.meta.outputs.version }}-ffmpeg-wasm-sources.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
       - name: Create draft GitHub release
         env:
           VERSION: ${{ steps.meta.outputs.version }}
@@ -194,6 +226,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: media-wasm-source
+          path: dist
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: backend/go.mod
@@ -206,7 +243,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.15.0'
+          node-version: '24.22.1'
 
       - name: Select bundled Node runtime
         shell: bash
@@ -349,7 +386,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.platform }}
-          path: dist/BeefTV-${{ needs.preflight.outputs.version }}-${{ matrix.platform }}*
+          path: |
+            dist/BeefTV-${{ needs.preflight.outputs.version }}-${{ matrix.platform }}*
+            dist/BeefTV-${{ needs.preflight.outputs.version }}-ffprobe-${{ matrix.platform }}-sources.tar.gz
           retention-days: 7
           if-no-files-found: error
 
@@ -372,7 +411,6 @@ jobs:
       AWS_EC2_METADATA_DISABLED: "true"
       AWS_REQUEST_CHECKSUM_CALCULATION: when_required
       AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
-      R2_ENDPOINT: ${{ vars.BEEFTV_R2_ENDPOINT }}
     steps:
       - uses: actions/checkout@v4
 
@@ -389,12 +427,16 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Check R2 publisher tooling
+      - name: Retrieve corresponding WASM source
+        uses: actions/download-artifact@v4
+        with:
+          name: media-wasm-source
+          path: dist
+
+      - name: Check release publisher tooling
         run: |
-          command -v aws
-          aws s3api put-object --generate-cli-skeleton input > "$RUNNER_TEMP/put-object.json"
-          python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); assert "IfMatch" in p and "IfNoneMatch" in p' "$RUNNER_TEMP/put-object.json"
           python3 -m unittest discover -s scripts -p 'test_publish_desktop_r2.py'
+          python3 -m unittest discover -s scripts -p 'test_desktop_cos_store.py'
           cd backend
           go build -o "$RUNNER_TEMP/update-release" ./cmd/update-release
 
@@ -431,21 +473,37 @@ jobs:
             --envelope "../dist/desktop-update.json" \
             --public-key-text "$BEEFTV_UPDATER_PUBLIC_KEY"
 
-      - name: Stage and verify immutable Cloudflare assets
+      - name: Stage and verify immutable R2 assets
         run: |
           python3 scripts/publish-desktop-r2.py stage \
             --manifest dist/desktop-update.json --assets-dir dist --with-installers \
-            --verifier "$RUNNER_TEMP/update-release" --endpoint-url "$R2_ENDPOINT"
+            --verification-receipt "$RUNNER_TEMP/release-public-verification.json" \
+            --verifier "$RUNNER_TEMP/update-release" --provider r2 \
+            --endpoint-url "$RELEASE_ENDPOINT" --region "$RELEASE_REGION" \
+            --bucket "$RELEASE_BUCKET" --public-base "$UPDATER_DOWNLOAD_BASE"
 
       - name: Publish signed GitHub release
         run: |
           set -euo pipefail
-          gh release upload "$VERSION" "dist/desktop-update.json" dist/BeefTV-"$VERSION"-*.zip dist/BeefTV-"$VERSION"-*.dmg dist/BeefTV-"$VERSION"-*-setup.exe dist/BeefTV-"$VERSION"-*.deb
+          gh release upload "$VERSION" "dist/desktop-update.json" dist/BeefTV-"$VERSION"-*.zip dist/BeefTV-"$VERSION"-*.dmg dist/BeefTV-"$VERSION"-*-setup.exe dist/BeefTV-"$VERSION"-*.deb dist/BeefTV-"$VERSION"-ffprobe-darwin-*-sources.tar.gz dist/BeefTV-"$VERSION"-ffmpeg-wasm-sources.tar.gz
           gh release edit "$VERSION" --draft=false --latest
 
-      - name: Activate verified Cloudflare update feed
+      - name: Activate verified R2 update feed
         run: |
           python3 scripts/publish-desktop-r2.py activate \
             --manifest dist/desktop-update.json --assets-dir dist --with-installers \
-            --verifier "$RUNNER_TEMP/update-release" --endpoint-url "$R2_ENDPOINT"
+            --verification-receipt "$RUNNER_TEMP/release-public-verification.json" \
+            --verifier "$RUNNER_TEMP/update-release" --provider r2 \
+            --endpoint-url "$RELEASE_ENDPOINT" --region "$RELEASE_REGION" \
+            --bucket "$RELEASE_BUCKET" --public-base "$UPDATER_DOWNLOAD_BASE"
           echo "Published $VERSION at $BEEFTV_UPDATER_FEED_URL."
+
+      - name: Bridge activated feed for existing COS clients
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.BEEFTV_COS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BEEFTV_COS_SECRET_ACCESS_KEY }}
+        run: |
+          python3 scripts/publish-desktop-r2.py bridge-cos \
+            --manifest dist/desktop-update.json --verifier "$RUNNER_TEMP/update-release" \
+            --provider cos --endpoint-url "$LEGACY_COS_ENDPOINT" --region "$LEGACY_COS_REGION" \
+            --bucket "$LEGACY_COS_BUCKET"

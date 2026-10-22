@@ -33,6 +33,8 @@ type ImageCapabilityConfig struct {
 	ResponseFormat        ParameterSupport     `json:"responseFormat"`
 	OutputFormat          ParameterSupport     `json:"outputFormat"`
 	MaxOutputs            int                  `json:"maxOutputs"`
+	GenerationOutputs     []int                `json:"generationOutputs,omitempty"`
+	FixedOutputs          int                  `json:"fixedOutputs,omitempty"`
 }
 
 type ImageReferenceConfig struct {
@@ -121,12 +123,14 @@ type VideoReferenceConfig struct {
 const DefaultVideoPromptMaxChars = 8000
 
 type VideoDurationConfig struct {
-	Selection string `json:"selection"`
-	Min       int    `json:"min,omitempty"`
-	Max       int    `json:"max,omitempty"`
-	Step      int    `json:"step,omitempty"`
-	Values    []int  `json:"values,omitempty"`
-	Default   int    `json:"default"`
+	Selection     string  `json:"selection"`
+	Min           int     `json:"min,omitempty"`
+	Max           int     `json:"max,omitempty"`
+	Step          int     `json:"step,omitempty"`
+	FractionalMin float64 `json:"fractionalMin,omitempty"`
+	Continuous    bool    `json:"continuous,omitempty"`
+	Values        []int   `json:"values,omitempty"`
+	Default       int     `json:"default"`
 }
 
 type VideoBooleanConfig struct {
@@ -198,6 +202,8 @@ type PublicChannelModel struct {
 	Capability       string                     `json:"capability"`
 	Protocol         model.ChannelInterfaceType `json:"protocol"`
 	CapabilityConfig map[string]any             `json:"capabilityConfig,omitempty"`
+	VideoPricing     map[string]any             `json:"videoPricing,omitempty"`
+	AudioOptions     *AudioGenerationOptions    `json:"audioOptions,omitempty"`
 	Available        bool                       `json:"available"`
 }
 
@@ -258,12 +264,15 @@ type TaskConfig struct {
 
 // TaskInput is the explicit adapter target for image/video capability checks.
 type TaskInput struct {
-	Mode            string
-	Prompt          string
-	Config          TaskConfig
-	ReferenceImages []MediaRef
-	ReferenceVideos []MediaRef
-	ReferenceAudios []MediaRef
-	Mask            *MediaRef
-	Metadata        map[string]any
+	// Template inputs have no media metadata until the user supplies resources.
+	// This internal flag is never accepted from a task request.
+	DeferReferenceMetadata bool `json:"-"`
+	Mode                   string
+	Prompt                 string
+	Config                 TaskConfig
+	ReferenceImages        []MediaRef
+	ReferenceVideos        []MediaRef
+	ReferenceAudios        []MediaRef
+	Mask                   *MediaRef
+	Metadata               map[string]any
 }

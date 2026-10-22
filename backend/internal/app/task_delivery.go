@@ -5,16 +5,20 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"time"
 
 	localasset "infinite-canvas/backend/internal/asset"
+	"infinite-canvas/backend/internal/generation"
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/outbound"
+	"infinite-canvas/backend/internal/protocol"
 	"infinite-canvas/backend/internal/repository"
 	localtask "infinite-canvas/backend/internal/task"
 	"infinite-canvas/backend/internal/taskdelivery"
@@ -68,7 +72,9 @@ func (s *Service) attachTaskDelivery(task *model.Task) {
 	proj := taskdelivery.Project(*task, stored, loadErr, persistedFailureBlocksRetry(task.Error, task.Stage))
 	task.Outputs = modelTaskOutputs(proj.Outputs)
 	task.ResultState = proj.ResultState
+	task.Stage = proj.Stage
 	task.Delivery = s.deliveryProgressRegistry().forTask(task.ID)
+	task.ReferenceProgress = s.referenceProgressForTask(task.ID)
 }
 
 func (s *Service) attachTaskSummaryDeliveries(tasks []model.Task, summaries []TaskSummary) {
@@ -94,7 +100,9 @@ func (s *Service) attachTaskSummaryDeliveries(tasks []model.Task, summaries []Ta
 		proj := taskdelivery.Project(task, byTask[task.ID], taskLoadErr, persistedFailureBlocksRetry(task.Error, task.Stage))
 		summaries[index].Outputs = proj.Outputs
 		summaries[index].ResultState = proj.ResultState
+		summaries[index].Stage = proj.Stage
 		summaries[index].Delivery = s.deliveryProgressRegistry().forTask(task.ID)
+		summaries[index].ReferenceProgress = s.referenceProgressForTask(task.ID)
 	}
 }
 
@@ -119,6 +127,7 @@ func (s *Service) startGenerationDeliveryRecovery(context.Context) {
 			if err := s.RecoverIncompleteGenerationDeliveries(0); err != nil {
 				log.Printf("generation delivery recovery paused: worker_id=%s error=%v", s.workerID, err)
 			}
+			s.recoverAssistantContinuations(ctx)
 		}
 		recoverOnce()
 		ticker := time.NewTicker(generationDeliveryRecoveryInterval)
@@ -239,10 +248,10 @@ func (s generationDeliveryStore) CommitOwned(item taskdelivery.OwnedDelivery) er
 	})); err != nil {
 		return err
 	}
-	// A stop can race with the final local commit after all network bytes arrived.
-	// Completing every output wins over a now-unnecessary delivery pause.
+	// Completing every output clears both a resumed download and a concurrent
+	// pause. Leave unrelated generation stages untouched.
 	task, err := s.repo.Task(item.Result.TaskID)
-	if err != nil || !deliveryPaused(task.Stage) {
+	if err != nil || (!deliveryPaused(task.Stage) && task.Stage != "正在取回结果" && !strings.Contains(task.InputJSON, `"imageDeliveryCipher"`)) {
 		return err
 	}
 	rows, err := s.repo.GenerationOutputResults(task.ID)
@@ -254,7 +263,7 @@ func (s generationDeliveryStore) CommitOwned(item taskdelivery.OwnedDelivery) er
 		return err
 	}
 	if localtask.DeliveryComplete(task.ResultJSON, outputs, task.Type) {
-		return s.repo.SetGenerationDeliveryStage(task.UserID, task.ID, "生成完成")
+		return s.repo.FinishGenerationDelivery(task.UserID, task.ID, task.InputJSON, publicTaskInputJSON(task.InputJSON))
 	}
 	return nil
 }
@@ -326,7 +335,7 @@ func (a generationDeliveryMediaAdapter) decodeGenerationArtifact(userID, identit
 		if contextErr != nil {
 			return "", nil, "", "", 0, 0, 0, contextErr
 		}
-		defer func() { finish(err == nil) }()
+		defer func() { finish(err) }()
 		if _, urlErr := validateRemoteResourceURL(artifactURL); urlErr != nil {
 			return "", nil, "", "", 0, 0, 0, urlErr
 		}
@@ -336,8 +345,13 @@ func (a generationDeliveryMediaAdapter) decodeGenerationArtifact(userID, identit
 		}
 		maxBytes := megabytes(policy.Resource.GeneratedFileMB) + 1
 		progress := a.service.deliveryProgressRegistry()
+		headers, headerErr := a.imageDownloadHeaders(userID, identity, kind, artifactURL)
+		if headerErr != nil {
+			return "", nil, "", "", 0, 0, 0, headerErr
+		}
 		result, downloadErr := outbound.DownloadResumable(ctx, artifactURL, outbound.ResumableOptions{
 			PartialPath: a.artifactDownloadPartialPath(userID, identity),
+			Headers:     headers,
 			MaxBytes:    maxBytes,
 			OnProgress: func(update outbound.ResumableProgress) {
 				progress.record(identity, deliveryProgressFromOutbound(identity, update))
@@ -351,6 +365,11 @@ func (a generationDeliveryMediaAdapter) decodeGenerationArtifact(userID, identit
 			return "", nil, "", "", 0, 0, 0, downloadErr
 		}
 		mimeType, data = result.MimeType, result.Data
+		if kind == "image" {
+			if validationErr := generation.ValidateImageArtifact(data, mimeType); validationErr != nil {
+				return "", nil, "", "", 0, 0, 0, validationErr
+			}
+		}
 		kind = normalizeResourceKind(kind, mimeType)
 		fileName = result.FileName
 		if fileName == "" {
@@ -375,6 +394,75 @@ func (a generationDeliveryMediaAdapter) decodeGenerationArtifact(userID, identit
 	default:
 		return "", nil, "", "", 0, 0, 0, fmt.Errorf("unsupported generation artifact %q", artifactURL)
 	}
+}
+
+// Retain same-origin provider authentication for deferred image downloads.
+// Headers are request-local and never written to a download sidecar.
+func (a generationDeliveryMediaAdapter) imageDownloadHeaders(userID, identity, kind, artifactURL string) (http.Header, error) {
+	if kind != "image" {
+		return nil, nil
+	}
+	taskID, _, ok := strings.Cut(identity, ":")
+	if !ok {
+		return nil, errors.New("generation artifact identity is incomplete")
+	}
+	task, err := a.service.repo.TaskForUser(userID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(task.InputJSON) == "" {
+		return nil, nil
+	}
+	plain, err := a.service.decryptTaskInputJSON(task.InputJSON)
+	if err != nil {
+		return nil, err
+	}
+	var input canvasGenerationInput
+	if err := json.Unmarshal([]byte(plain), &input); err != nil {
+		return nil, err
+	}
+	var retained struct {
+		Cipher string `json:"imageDeliveryCipher"`
+	}
+	if err := json.Unmarshal([]byte(plain), &retained); err != nil {
+		return nil, err
+	}
+	if retained.Cipher != "" {
+		configJSON, err := a.service.decryptSettingSecret(retained.Cipher)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(configJSON), &input.Config); err != nil {
+			return nil, err
+		}
+	}
+	if input.Config.BaseURL == "" && input.Config.ChannelID == "" {
+		return nil, nil
+	}
+	config, err := a.service.resolveProviderConfig(input.Config)
+	if err != nil {
+		return nil, err
+	}
+	if !generation.SameProviderOrigin(config.BaseURL, artifactURL) {
+		return nil, nil
+	}
+	req, err := http.NewRequest(http.MethodGet, artifactURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if adapter, ok := a.service.protocolRegistry().Resolve(config.InterfaceType); ok {
+		if auth, ok := adapter.(protocol.MediaAuthAdapter); ok {
+			if err := generation.ApplyProtocolAuth(req, config, auth.MediaAuth()); err != nil {
+				return nil, err
+			}
+		} else {
+			generation.ApplyAuth(req, config)
+		}
+	} else {
+		generation.ApplyAuth(req, config)
+	}
+	outbound.ApplyOutboundHeaders(req, config.Headers)
+	return req.Header, nil
 }
 
 // artifactDownloadPartialPath keeps the resumable .part file per delivery

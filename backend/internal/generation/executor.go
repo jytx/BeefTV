@@ -48,6 +48,12 @@ func Execute(ctx context.Context, input Input) (map[string]any, error) {
 		return nil, errors.New("无法解析系统渠道配置")
 	}
 	applyCanvasTextStreaming(runtime.Call.TaskType, &input)
+	if UpscaleMediaType(input.Config.Model) != "" {
+		if err := requireTaskRuntime(ctx); err != nil {
+			return nil, err
+		}
+		return RunUpscaleTask(ctx, input)
+	}
 	if input.Mode == "image" && providerpreset.IsBeefAPIEndpoint(input.Config.BaseURL) {
 		if contract, ok := providerpreset.BeefAPIImageContract(input.Config.Model); ok {
 			input.Config.InterfaceType = contract.Protocol
@@ -100,10 +106,12 @@ func Execute(ctx context.Context, input Input) (map[string]any, error) {
 				return nil, err
 			}
 		}
-		if input.Mode == "video" {
+		if input.Mode == "video" || len(input.ReferenceVideos) > 0 || len(input.ReferenceAudios) > 0 {
 			if err := HydrateVideoReferenceMetadata(ctx, userID, &input); err != nil {
-				return nil, err
+				return nil, RequestPreparationError{Cause: err}
 			}
+		}
+		if input.Mode == "video" {
 			if runtime.Config != nil {
 				if err := runtime.Config.ApplyCapabilities(ctx, &input); err != nil {
 					return nil, err
@@ -118,7 +126,7 @@ func Execute(ctx context.Context, input Input) (map[string]any, error) {
 				return nil, err
 			}
 		}
-		if err := PrepareBeefAPISeedanceReferences(ctx, input.Config, &input, ownedSeedanceMediaReader(ctx, userID)); err != nil {
+		if err := PrepareBeefAPIVideoReferences(ctx, input.Config, &input, ownedSeedanceMediaReader(ctx, userID)); err != nil {
 			return nil, err
 		}
 		if err := prepareFullVideoReferences(ctx, &input, ownedFullVideoMediaReader(ctx, userID)); err != nil {
@@ -139,6 +147,9 @@ func Execute(ctx context.Context, input Input) (map[string]any, error) {
 	}
 
 	if preparing {
+		if runtime.ReferenceProgress != nil {
+			runtime.ReferenceProgress.ClearReference()
+		}
 		if err := setExecutionStage(ctx, runtime, "正在提交生成任务"); err != nil {
 			return nil, err
 		}
@@ -239,6 +250,11 @@ func validatePreparedInput(ctx context.Context, input Input) error {
 		return errors.New("后端生成任务缺少 Base URL、API Key 或模型名")
 	}
 	if err := validateInterfaceForContext(ctx, input.Mode, input.Config.InterfaceType); err != nil {
+		// This local check precedes the create request. A resumed provider task,
+		// however, already has submission evidence that must not be erased.
+		if ResumedProviderRequestID(ctx) == "" {
+			return ProtocolPreparationError{Cause: err}
+		}
 		return err
 	}
 	if IsVolcengineJiMengProtocol(input.Config.InterfaceType) && strings.TrimSpace(input.Config.SecretKey) == "" {

@@ -12,6 +12,7 @@ import (
 )
 
 func RegisterTaskRoutes(r *gin.RouterGroup, svc *app.Service, hostedProfile ...bool) {
+	registerMediaUpscaleRoutes(r, svc)
 	r.POST("/tasks", func(c *gin.Context) {
 		if !requireTrustedDesktopWritePrincipal(c, "任务只能由当前桌面界面创建") {
 			return
@@ -168,6 +169,19 @@ func RegisterTaskRoutes(r *gin.RouterGroup, svc *app.Service, hostedProfile ...b
 			return
 		}
 		ok(c, tasks)
+	})
+	r.GET("/tasks/by-operation/:operationId", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		task, err := svc.TaskByClientOperation(user.ID, c.Query("projectId"), c.Param("operationId"))
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, task)
 	})
 	r.GET("/tasks/:id", func(c *gin.Context) {
 		user, err := currentUser(c, svc)

@@ -26,9 +26,10 @@ type imageAttemptContext struct{}
 type imageTaskContext struct{}
 
 type imageWireRequest struct {
-	URL    string
-	Header http.Header
-	Body   []byte
+	URL            string
+	Header         http.Header
+	Body           []byte
+	ReplayProtocol string
 }
 
 func (s *Service) validateImageTaskRetry(task *model.Task) error {
@@ -61,6 +62,51 @@ func (s *Service) validateImageTaskRetry(task *model.Task) error {
 func definiteImageThrottle(err error) bool {
 	var upstream providerHTTPError
 	return !isImageRecoveryError(err) && errors.As(err, &upstream) && upstream.StatusCode == 429 && classifyProviderHTTP(upstream).Category == generation.CategoryThrottled
+}
+
+func definiteMidjourneyCountRejection(err error) bool {
+	var upstream providerHTTPError
+	if !errors.As(err, &upstream) || upstream.StatusCode < 400 {
+		return false
+	}
+	var body struct {
+		TaskID string `json:"task_id"`
+		ID     string `json:"id"`
+		Error  struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			TaskID  string `json:"task_id"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(upstream.Body), &body) != nil || body.TaskID != "" || body.ID != "" || body.Error.TaskID != "" {
+		return false
+	}
+	return body.Error.Code == "invalid_request" && strings.HasPrefix(strings.ToLower(strings.TrimSpace(body.Error.Message)), "midjourney generates four images per request; n must be 4 or omitted")
+}
+
+// A structured VOD parameter failure is a terminal response, even if VOD created
+// a task before rejecting its parameters. It is never evidence for an automatic resend.
+func definiteVODImageParameterFailure(err error) bool {
+	if isImageRecoveryError(err) {
+		return false
+	}
+	var unknown generation.SubmissionUnknownError
+	if errors.As(err, &unknown) {
+		return false
+	}
+	var upstream providerHTTPError
+	if !errors.As(err, &upstream) || upstream.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(upstream.Body), &body) != nil {
+		return false
+	}
+	return body.Error.Code == "vod_image_invalid_params" || body.Error.Code == "vod_image_invalid_media"
 }
 
 func isImageRecoveryError(err error) bool {
@@ -219,7 +265,7 @@ func prepareImageSubmission(s *Service, req *http.Request) (*model.ImageSubmissi
 	header := req.Header.Clone()
 	header.Del("X-Idempotency-Key")
 	header.Set("Idempotency-Key", key)
-	raw, err := json.Marshal(imageWireRequest{URL: req.URL.String(), Header: header, Body: body})
+	raw, err := json.Marshal(imageWireRequest{URL: req.URL.String(), Header: header, Body: body, ReplayProtocol: generation.ImageReplayProtocol})
 	if err != nil {
 		return nil, true, err
 	}
@@ -273,6 +319,14 @@ func (s *Service) sendImageSubmissionWith(ctx context.Context, task model.Task, 
 			return nil, "", imageRecoveryError{err}
 		}
 		req.Header = wire.Header.Clone()
+		if wire.ReplayProtocol == generation.ImageReplayProtocol {
+			req = req.WithContext(generation.WithImageReplayProtocol(req.Context(), wire.ReplayProtocol))
+		} else {
+			req, err = generation.NegotiateImageReplay(req)
+			if err != nil {
+				return nil, "", imageRecoveryError{err}
+			}
+		}
 		if !recoverableImageEndpoint(req) || req.Header.Get("Idempotency-Key") == "" {
 			return nil, "", imageRecoveryError{errors.New("图片恢复记录无效")}
 		}
@@ -298,7 +352,14 @@ func (s *Service) sendImageSubmissionWith(ctx context.Context, task model.Task, 
 			}
 			return data, mime, nil
 		}
+		if !row.ResponseAccepted && definiteMidjourneyCountRejection(sendErr) {
+			return nil, "", sendErr
+		}
 		if !retrySameImageSubmission(sendErr) {
+			var preparation generation.RequestPreparationError
+			if errors.As(sendErr, &preparation) {
+				return nil, "", sendErr
+			}
 			var upstream providerHTTPError
 			if errors.As(sendErr, &upstream) && (upstream.StatusCode == 409 || upstream.StatusCode == 410 || upstream.StatusCode >= 500) {
 				return nil, "", imageRecoveryError{sendErr}
@@ -323,6 +384,13 @@ func (s *Service) sendImageSubmissionWith(ctx context.Context, task model.Task, 
 }
 
 func retrySameImageSubmission(err error) bool {
+	if definiteMidjourneyCountRejection(err) {
+		return false
+	}
+	var preparation generation.RequestPreparationError
+	if errors.As(err, &preparation) {
+		return false
+	}
 	if errors.Is(err, context.Canceled) {
 		return false
 	}

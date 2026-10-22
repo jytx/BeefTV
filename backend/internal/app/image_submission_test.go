@@ -48,6 +48,7 @@ func imageSubmissionFixture(t *testing.T, multipartBody bool) (*Service, *gorm.D
 		body, contentType, path = buffer.Bytes(), writer.FormDataContentType(), "/v1/images/edits"
 	}
 	ctx := withProviderSubmissionKey(withProviderAnalytics(context.Background(), s, task), attempt)
+	ctx = generation.WithImageReplayProtocol(ctx, generation.ImageReplayProtocol)
 	ctx = context.WithValue(ctx, imageTaskContext{}, task)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://enterprise.beefapi.com"+path, bytes.NewReader(body))
 	req.Header.Set("Content-Type", contentType)
@@ -64,6 +65,60 @@ func imageSubmissionFixture(t *testing.T, multipartBody bool) (*Service, *gorm.D
 }
 
 func noImageWait(context.Context, time.Duration) error { return nil }
+
+func TestImageSubmissionMidjourneyCountRejectionStopsWithoutRecovery(t *testing.T) {
+	s, _, task, row, _ := imageSubmissionFixture(t, false)
+	calls := 0
+	_, _, err := s.sendImageSubmissionWith(context.Background(), task, row, func(_ *http.Request, admit func() error) ([]byte, string, error) {
+		if err := admit(); err != nil {
+			return nil, "", err
+		}
+		calls++
+		return nil, "", providerHTTPError{StatusCode: 500, Body: `{"error":{"code":"invalid_request","message":"Midjourney generates four images per request; n must be 4 or omitted (request id: safe-request-id)"}}`}
+	}, noImageWait)
+	failure := classifyTaskFailure(err)
+	if calls != 1 || failure.Category != generation.CategoryInvalidParams || failure.Uncertain {
+		t.Fatalf("calls=%d failure=%+v", calls, failure)
+	}
+	attempt, loadErr := s.repo.LatestRouteAttempt(task.ID)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	s.finishTaskRouteAttempt(attempt, &task, err)
+	if attempt.DispatchState != "rejected_no_job" {
+		t.Fatalf("route state=%s", attempt.DispatchState)
+	}
+}
+
+func TestImageSubmissionCountRejectionRequiresExplicitEvidence(t *testing.T) {
+	for _, body := range []string{
+		`{"error":{"code":"invalid_request","message":"internal processing failed"}}`,
+		`{"error":{"code":"internal_error","message":"Midjourney generates four images per request; n must be 4 or omitted"}}`,
+		`{"task_id":"accepted-task","error":{"code":"invalid_request","message":"Midjourney generates four images per request; n must be 4 or omitted"}}`,
+		`<html>Midjourney generates four images per request; n must be 4 or omitted</html>`,
+	} {
+		err := providerHTTPError{StatusCode: 500, Body: body}
+		if definiteMidjourneyCountRejection(err) || !retrySameImageSubmission(err) {
+			t.Fatalf("unknown submission treated as a definite rejection: %s", body)
+		}
+	}
+}
+
+func TestImageSubmissionCountErrorCannotErasePriorAcceptance(t *testing.T) {
+	s, _, task, row, _ := imageSubmissionFixture(t, false)
+	if err := s.repo.MarkImageSubmissionAccepted(row); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := s.sendImageSubmissionWith(context.Background(), task, row, func(_ *http.Request, admit func() error) ([]byte, string, error) {
+		if err := admit(); err != nil {
+			return nil, "", err
+		}
+		return nil, "", providerHTTPError{StatusCode: 500, Body: `{"error":{"code":"invalid_request","message":"Midjourney generates four images per request; n must be 4 or omitted"}}`}
+	}, noImageWait)
+	if failure := classifyTaskFailure(err); !failure.Uncertain || failure.Category != generation.CategorySubmissionUncertain {
+		t.Fatalf("accepted response lost: %+v", failure)
+	}
+}
 
 func TestImageSubmissionUnknownProviderCannotReplayOrRetryLostResponse(t *testing.T) {
 	s, db, task, row, _ := imageSubmissionFixture(t, false)
@@ -457,12 +512,13 @@ func TestImageSubmissionPermanentErrorsDoNotFallBackToAnotherRoute(t *testing.T)
 	}
 }
 
-func TestImageSubmissionPersistenceRequiredAndScopeAllowlist(t *testing.T) {
+func TestImageSubmissionRequiresProtocolAndPersistence(t *testing.T) {
 	s, db, task, row, _ := imageSubmissionFixture(t, false)
 	if err := db.Migrator().DropTable(&model.ImageSubmission{}); err != nil {
 		t.Fatal(err)
 	}
 	ctx := withProviderSubmissionKey(withProviderAnalytics(context.Background(), s, task), &model.RouteAttempt{ID: row.AttemptID, TaskID: task.ID})
+	ctx = generation.WithImageReplayProtocol(ctx, generation.ImageReplayProtocol)
 	ctx = context.WithValue(ctx, imageTaskContext{}, task)
 	req, _ := http.NewRequestWithContext(ctx, "POST", "https://enterprise.beefapi.com/v1/images/generations", strings.NewReader(`{}`))
 	_, handled, err := prepareImageSubmission(s, req)
@@ -740,7 +796,7 @@ func TestImageSubmissionDownloadThrottleCannotBecomeNewPaidAttempt(t *testing.T)
 
 func TestRecoverableImageMissingOwnerSendsZeroUpstream(t *testing.T) {
 	s, _, task, row, _ := imageSubmissionFixture(t, false)
-	ctx := withProviderAnalytics(context.Background(), s, task)
+	ctx := generation.WithImageReplayProtocol(withProviderAnalytics(context.Background(), s, task), generation.ImageReplayProtocol)
 	runtime, ok := generation.RuntimeFromContext(ctx)
 	if !ok {
 		t.Fatal("analytics did not bind runtime")
@@ -757,7 +813,7 @@ func TestRecoverableImageMissingOwnerSendsZeroUpstream(t *testing.T) {
 		t.Fatalf("missing owner error = %v", err)
 	}
 
-	ctx = withProviderAnalytics(context.Background(), s, task)
+	ctx = generation.WithImageReplayProtocol(withProviderAnalytics(context.Background(), s, task), generation.ImageReplayProtocol)
 	ctx = context.WithValue(ctx, imageTaskContext{}, task)
 	req, _ = http.NewRequestWithContext(ctx, http.MethodPost, "https://enterprise.beefapi.com/v1/images/generations", strings.NewReader(`{}`))
 	_, handled, err := prepareImageSubmission(s, req)
@@ -781,6 +837,7 @@ func TestTwoImagePortsCannotStealOwner(t *testing.T) {
 	}
 
 	ctx1 := withProviderSubmissionKey(withProviderAnalytics(context.Background(), s1, task1), &model.RouteAttempt{ID: row1.AttemptID, TaskID: task1.ID})
+	ctx1 = generation.WithImageReplayProtocol(ctx1, generation.ImageReplayProtocol)
 	ctx1 = context.WithValue(ctx1, imageTaskContext{}, task1)
 	req1, _ := http.NewRequestWithContext(ctx1, http.MethodPost, "https://enterprise.beefapi.com/v1/images/generations", strings.NewReader(`{"prompt":"owner-one"}`))
 	got, handled, err := prepareImageSubmission(port2.service, req1)

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -512,6 +513,10 @@ func (s *operationSession) CreateUserCanvasNodes(userID string, canvasID string,
 	return s.canvas.CreateUserCanvasNodes(userID, canvasID, drafts, expectedRevision)
 }
 
+func (s *operationSession) PrepareUserCanvasStoryboard(userID, canvasID, nodeID string, input canvas.StoryboardPreparation, expectedRevision int64) (canvas.UserDataSummary, canvas.StoryboardPreparationResult, error) {
+	return s.canvas.PrepareUserCanvasStoryboard(userID, canvasID, nodeID, input, expectedRevision)
+}
+
 func (s *operationSession) UpdateUserCanvasNodeFields(userID string, canvasID string, nodeID string, patch map[string]any, expectedRevision int64) (canvas.UserDataSummary, error) {
 	return s.canvas.UpdateUserCanvasNodeFields(userID, canvasID, nodeID, patch, expectedRevision)
 }
@@ -524,7 +529,7 @@ func (s *operationSession) AppendUserCanvasStoryboardRows(userID string, canvasI
 	return s.canvas.AppendUserCanvasStoryboardRows(userID, canvasID, nodeID, drafts, expectedRevision)
 }
 
-func (s *operationSession) UpdateUserCanvasStoryboardRows(userID string, canvasID string, nodeID string, patches []canvas.StoryboardRowPatch, expectedRevision int64) (canvas.UserDataSummary, []canvas.StoryboardRowIdentity, error) {
+func (s *operationSession) UpdateUserCanvasStoryboardRows(userID string, canvasID string, nodeID string, patches []canvas.StoryboardRowPatch, expectedRevision int64) (canvas.UserDataSummary, canvas.StoryboardRowUpdate, error) {
 	return s.canvas.UpdateUserCanvasStoryboardRows(userID, canvasID, nodeID, patches, expectedRevision)
 }
 
@@ -602,20 +607,28 @@ func (s *operationSession) OwnedAsset(userID, assetID string) (*model.Asset, err
 	return nil, &taskbinding.Error{Status: 412, Reason: "output_not_ready", Message: "任务素材尚未就绪"}
 }
 
-func (s *operationSession) BindExistingCanvasNode(userID string, patch canvas.TaskOutputBind) (canvas.TaskOutputBindResult, error) {
+func (s *operationSession) BindExistingCanvasNode(userID string, patch canvas.TaskOutputBind) (result canvas.TaskOutputBindResult, err error) {
 	patch.AllowEmptyVideo = false
-	patch.DepthClientOperationID = ""
+	patch.PendingClientOperationID = ""
+	patch.TaskType = ""
 	task, err := s.repo.TaskForUser(userID, patch.TaskID)
 	if err != nil {
 		return canvas.TaskOutputBindResult{}, err
 	}
+	if task != nil {
+		patch.TaskType = task.Type
+		fields := taskSupportFields(*task)
+		fields.NodeID, fields.CanvasID = patch.NodeID, patch.CanvasID
+		_, finishTrace := s.service.SupportTrace().Start(taskSupportContext(context.Background(), *task), "canvas.bind", fields)
+		defer func() { finishTrace(supportFailureReason(err)) }()
+	}
 	if task != nil && task.UserID == userID && task.ProjectID == patch.CanvasID && task.Type == model.TaskTypeTimelineRender && task.Provider == "local" && task.Model == "ffmpeg" && task.Status == model.TaskStatusSucceeded {
 		patch.AllowEmptyVideo = true
 	}
-	if task != nil && task.UserID == userID && task.ProjectID == patch.CanvasID && task.Type == model.TaskTypeDepthCapture && task.Status == model.TaskStatusSucceeded && task.ClientOperationID != nil {
+	if task != nil && task.UserID == userID && task.ProjectID == patch.CanvasID && (task.Type == model.TaskTypeDepthCapture || task.Type == "canvas_video") && task.Status == model.TaskStatusSucceeded && task.ClientOperationID != nil {
 		target := localtask.TargetBindingFromInput(task.InputJSON)
 		if target.NodeID == patch.NodeID && target.Source == "canvas" {
-			patch.DepthClientOperationID = strings.TrimSpace(*task.ClientOperationID)
+			patch.PendingClientOperationID = strings.TrimSpace(*task.ClientOperationID)
 		}
 	}
 	return s.canvas.BindTaskOutputToExistingNode(userID, patch)

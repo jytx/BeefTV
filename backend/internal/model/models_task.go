@@ -45,12 +45,17 @@ type Task struct {
 	ResultState               string                  `json:"resultState,omitempty" gorm:"-"`
 	Outputs                   []TaskOutput            `json:"outputs,omitempty" gorm:"-"`
 	Delivery                  *TaskDeliveryProgress   `json:"delivery,omitempty" gorm:"-"`
+	ReferenceProgress         *TaskReferenceProgress  `json:"referenceProgress,omitempty" gorm:"-"`
 	FailureDiagnostics        *TaskFailureDiagnostics `json:"failureDiagnostics,omitempty" gorm:"serializer:json;type:text"`
 	Attempts                  int                     `json:"attempts"`
 	StartedAt                 *time.Time              `json:"startedAt"`
 	CompletedAt               *time.Time              `json:"completedAt"`
 	CreatedAt                 time.Time               `json:"createdAt" gorm:"index:idx_tasks_user_created,priority:2;index:idx_tasks_status_created,priority:2;index:idx_tasks_claim,priority:3;index:idx_tasks_user_project_created,priority:3"`
 	UpdatedAt                 time.Time               `json:"updatedAt"`
+
+	// WorkflowSourceCipher retains the canonical successful command privately,
+	// before public completion projections remove media and provider settings.
+	WorkflowSourceCipher string `json:"-" gorm:"type:text"`
 }
 
 // TaskFailureDiagnostics contains bounded, redacted evidence, never request bodies.
@@ -69,6 +74,8 @@ type TaskFailureDiagnostics struct {
 	ProviderTaskID  string                `json:"providerTaskId,omitempty"`
 	Param           string                `json:"param,omitempty"`
 	Stage           string                `json:"stage,omitempty"`
+	FailedOperation string                `json:"failedOperation,omitempty"`
+	TransportPhase  string                `json:"transportPhase,omitempty"`
 	CapturedAt      string                `json:"capturedAt,omitempty"`
 }
 
@@ -76,6 +83,9 @@ type TaskRequestEvidence struct {
 	Operation             string `json:"operation"`
 	Method                string `json:"method"`
 	Dispatched            bool   `json:"dispatched"`
+	TransportPhase        string `json:"transportPhase,omitempty"`
+	TransportRoute        string `json:"transportRoute,omitempty"`
+	Attempt               int    `json:"attempt,omitempty"`
 	Outcome               string `json:"outcome"`
 	HTTPStatus            int    `json:"httpStatus,omitempty"`
 	RequestID             string `json:"requestId,omitempty"`
@@ -172,10 +182,22 @@ type TaskDeliveryProgress struct {
 	Outputs []TaskDeliveryOutputProgress `json:"outputs"`
 }
 
+// Observations only; never contains an upstream URL, upload ticket or local path.
+type TaskReferenceProgress struct {
+	Label          string `json:"label"`
+	Phase          string `json:"phase"`
+	LoadedBytes    int64  `json:"loadedBytes"`
+	TotalBytes     int64  `json:"totalBytes"`
+	BytesPerSecond int64  `json:"bytesPerSecond"`
+	StartedAt      int64  `json:"startedAt"`
+	UpdatedAt      int64  `json:"updatedAt"`
+}
+
 type TaskDeliveryOutputProgress struct {
 	OutputIndex     int    `json:"outputIndex"`
 	DownloadedBytes int64  `json:"downloadedBytes"`
 	TotalBytes      int64  `json:"totalBytes"`
 	BytesPerSecond  int64  `json:"bytesPerSecond"`
+	UpdatedAt       int64  `json:"updatedAt"`
 	State           string `json:"state"`
 }
