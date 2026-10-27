@@ -103,6 +103,8 @@ type Service struct {
 	tasksOnce                sync.Once
 	workspaceOps             *operations.Registry
 	workspaceOpsMu           sync.Mutex
+	imageRecoveryActive      atomic.Bool
+	imageRecoveryAfterID     string
 	bindAfterID              string
 	bindCursorMu             sync.Mutex
 }
@@ -276,6 +278,7 @@ func (s *Service) refreshTaskProviderState(task *model.Task) error {
 	if latest.ProviderRequestID != "" {
 		task.ProviderRequestID = latest.ProviderRequestID
 	}
+	task.Stage, task.Progress = latest.Stage, latest.Progress
 	task.PollStage = latest.PollStage
 	task.NextPollAt = latest.NextPollAt
 	task.ProviderCancelStatus = latest.ProviderCancelStatus

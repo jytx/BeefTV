@@ -281,6 +281,8 @@ func DoBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]by
 // DoBinaryWithDispatchAdmission fences a paid send after local preflight and
 // channel admission, immediately before transport can make its outcome unknown.
 func DoBinaryWithDispatchAdmission(req *http.Request, admit func() error) ([]byte, string, error) {
+	// 冻结图片提交的幂等合同只属于原端点；重定向不能把 POST 带到未核实的渠道。
+	req = req.WithContext(context.WithValue(req.Context(), binaryNoRedirectContext{}, true))
 	return doBinaryWithAdmission(req, nil, admit)
 }
 
@@ -290,7 +292,7 @@ func doBinaryWithAdmission(req *http.Request, onChunk func(string, []byte), admi
 	req = trace.attach(req)
 	observation := TransportObservation{Request: req, StartedAt: startedAt, ResponseLimitBytes: MaxResponseBytes}
 	defer func() {
-		observation.Dispatched, observation.TransportPhase = trace.result()
+		observation.Dispatched, observation.TransportPhase = trace.result(resultErr)
 		observation.Body = responseData
 		observation.Err = resultErr
 		if runtime, ok := RuntimeFromContext(req.Context()); ok && runtime.Receipts != nil {
@@ -382,7 +384,7 @@ func doBinaryWithAdmission(req *http.Request, onChunk func(string, []byte), admi
 		}
 	}
 	resp, err := client.Do(req)
-	observation.Dispatched, observation.TransportPhase = trace.result()
+	observation.Dispatched, observation.TransportPhase = trace.result(err)
 	if err != nil {
 		if usesGenerationCircuit {
 			_ = runtime.Limits.RecordChannelResult(req.Context(), channelID, !errors.Is(err, context.Canceled))
